@@ -12,41 +12,37 @@ SM EARN is a tournament hosting and wallet management application built with Rea
 - **Social**: Real-time chat system with friends.
 - **Admin Panel**: Comprehensive dashboard to manage users, matches, and transactions.
 
-## Setup Instructions
+## 🚀 How to Deploy (Make it Live)
 
-### Prerequisites
-- Node.js installed on your machine.
-- A Firebase project configured.
+The easiest way to host this app for free is using **Vercel**.
 
-### Uploading to GitHub
+### Step 1: Upload to GitHub
+1.  Initialize Git: `git init`
+2.  Add files: `git add .`
+3.  Commit: `git commit -m "Initial commit"`
+4.  Push to your GitHub repository.
 
-1.  **Initialize Git**:
-    ```bash
-    git init
-    ```
+### Step 2: Deploy on Vercel
+1.  Go to [vercel.com](https://vercel.com) and sign up with GitHub.
+2.  Click **"Add New Project"** and select your `sm-earn` repository.
+3.  **IMPORTANT**: In the "Configure Project" screen, find the **Environment Variables** section.
+4.  You MUST add your Firebase keys here. Open your local `.env` file and copy-paste each key and value pair.
+    *   Example: Name: `VITE_FIREBASE_API_KEY`, Value: `AIzaSy...`
+5.  Click **Deploy**.
 
-2.  **Add Files**:
-    ```bash
-    git add .
-    ```
-
-3.  **Commit Changes**:
-    ```bash
-    git commit -m "Initial commit: SM EARN App"
-    ```
-
-4.  **Connect to GitHub**:
-    - Create a new repository on GitHub (leave it empty, don't add README/gitignore during creation).
-    - Run the command provided by GitHub:
-    ```bash
-    git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-    ```
-
-5.  **Push Code**:
-    ```bash
-    git push -u origin master
-    ```
+Your app will be live on a URL like `https://sm-earn.vercel.app`!
 
 ## Security Note
 
-This project currently uses a `firebase.ts` file with visible API keys. For a production environment, ensure you restrict these keys in the Firebase Console to your specific domains, or move them to `.env` variables.
+**GitHub Warning Fix**: This project is configured to use Environment Variables (`.env`) for Firebase keys.
+*   **Do not** upload your `.env` file to GitHub.
+*   The `.env` file is included in `.gitignore` to prevent this.
+*   If you see a warning on GitHub, it might be from previous commits. Ensure your `firebase.ts` uses `import.meta.env` (already configured).
+
+## Development
+
+To run locally:
+```bash
+npm install
+npm run dev
+```
