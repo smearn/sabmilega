@@ -284,22 +284,10 @@ const GameDetailsScreen = ({ gameId, onBack, user, showToast, onNavigateToWallet
 
     const handleCopy = (e: React.MouseEvent, text: string) => { e.stopPropagation(); navigator.clipboard.writeText(text); showToast("Copied!", "success"); };
     
-    const handleShareCopy = async () => { 
-        if (!tournamentToShare) return;
-        const text = `Join my ${tournamentToShare.gameName} match on SM EARN!\nEntry: ₹${tournamentToShare.entryFee}\nWin: ₹${tournamentToShare.rewardAmount}\nTime: ${new Date(tournamentToShare.startTime).toLocaleString()}\n\nDownload App Now!`;
-        if (navigator.share) {
-             await navigator.share({ title: 'Join Match', text, url: window.location.href });
-        } else {
-             navigator.clipboard.writeText(text);
-             showToast("Invite Copied!", "success");
-        }
-    };
-
     const list = getFilteredList();
     const totalStats = list.reduce((acc, t) => { if (t.status === 'completed' && t.participants && t.participants[user.uid]) { const p = t.participants[user.uid]; const profit = (p.winnings || 0) - t.entryFee; return acc + profit; } return acc; }, 0);
 
     const TournamentCard: React.FC<{ t: Tournament, fullWidth?: boolean }> = ({ t, fullWidth }) => {
-        // ... (Keep existing TournamentCard logic) ...
         // @ts-ignore
         const { maxPlayers, totalPool } = getGameStats(t.gameName, t.mode, t.entryFee, t.maxPlayers);
         const participants = t.participants ? Object.keys(t.participants) : [];
@@ -482,11 +470,6 @@ const GameDetailsScreen = ({ gameId, onBack, user, showToast, onNavigateToWallet
             </div>
         );
     };
-
-    const joinTotalFee = selectedTournament ? selectedTournament.entryFee * teamJoinForms.length : 0;
-    const userWalletBalance = (user.wallet.added || 0) + (user.wallet.winning || 0);
-    const hasSufficient = userWalletBalance >= joinTotalFee;
-    const deficit = joinTotalFee - userWalletBalance;
 
     const renderTournamentList = () => {
         if (list.length === 0) {
@@ -680,50 +663,48 @@ const GameDetailsScreen = ({ gameId, onBack, user, showToast, onNavigateToWallet
                     <div className="border-t border-slate-100 dark:border-slate-800 pt-3">
                         <label className="flex items-center gap-2 mb-3 cursor-pointer">
                             <input type="checkbox" checked={rulesAccepted} onChange={e => setRulesAccepted(e.target.checked)} className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300" disabled={isUpdateMode} />
-                            <span className="text-xs text-slate-600 dark:text-slate-300 font-medium">I accept all <span className="text-blue-600 dark:text-blue-400 underline" onClick={(e) => {e.preventDefault(); setShowRules(true)}}>Rules & Policies</span></span>
+                            <span className="text-xs text-slate-600 dark:text-slate-400">I accept the Match Rules & Fair Play Policy</span>
                         </label>
-                        {isUpdateMode ? (
-                             <button onClick={submitJoin} disabled={joining} className="w-full bg-slate-900 text-white font-medium py-3.5 rounded-xl shadow-lg shadow-slate-500/30 flex items-center justify-center gap-2">
-                                 {joining ? <i className="fa-solid fa-spinner fa-spin"></i> : "UPDATE DETAILS"}
-                             </button>
-                        ) : hasSufficient ? (
-                             <button onClick={submitJoin} disabled={joining} className="w-full bg-slate-900 text-white font-medium py-3.5 rounded-xl shadow-lg shadow-slate-500/30 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
-                                 {joining ? <i className="fa-solid fa-spinner fa-spin"></i> : "PAY & JOIN"}
-                             </button>
-                        ) : (
-                             <button onClick={() => { setJoinModalOpen(false); onNavigateToWallet(); }} className="w-full bg-red-600 text-white font-medium py-3.5 rounded-xl shadow-lg shadow-red-500/30 flex items-center justify-center gap-2 hover:bg-red-700">
-                                 <i className="fa-solid fa-wallet"></i> ADD CASH (+₹{deficit})
-                             </button>
-                        )}
                     </div>
+                    <button 
+                        onClick={submitJoin} 
+                        disabled={joining}
+                        className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 disabled:opacity-70"
+                    >
+                        {joining ? <i className="fa-solid fa-spinner fa-spin"></i> : (isUpdateMode ? "Update Details" : "Confirm Join")}
+                    </button>
                 </div>
                 </>
             )}
-            
+
             {showRules && (
-                 <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]">
-                    <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-sm max-h-[85vh] flex flex-col shadow-2xl overflow-hidden border border-white/20">
-                        <div className="bg-orange-500 p-6 flex justify-center items-center relative">
-                            <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg relative z-10">
-                                <i className="fa-solid fa-triangle-exclamation text-4xl text-orange-500"></i>
-                            </div>
-                            <button onClick={() => setShowRules(false)} className="absolute top-4 right-4 text-white/80 hover:text-white"><i className="fa-solid fa-xmark text-xl"></i></button>
+                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]" onClick={() => setShowRules(false)}>
+                    <div className="bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-white">Match Rules</h3>
+                            <button onClick={() => setShowRules(false)}><i className="fa-solid fa-xmark text-slate-400"></i></button>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-slate-900">
-                            <h3 className="text-center font-extrabold text-2xl text-slate-800 dark:text-white mb-1 uppercase tracking-tight">Important Rules</h3>
-                            <p className="text-center text-xs font-medium text-slate-400 mb-6 uppercase tracking-widest">Read Carefully</p>
-                            <div className="space-y-4 text-sm text-slate-600 dark:text-slate-300">
-                                <div className="flex gap-3"><span className="font-bold text-orange-500">01.</span><p><strong className="text-slate-800 dark:text-white">Credentials:</strong> Room ID & Password will be given 10 minutes before start time.</p></div>
-                                <div className="flex gap-3"><span className="font-bold text-orange-500">02.</span><p><strong className="text-slate-800 dark:text-white">Wait Time:</strong> Host will wait max 5 mins after start time.</p></div>
-                                <div className="flex gap-3"><span className="font-bold text-orange-500">03.</span><p><strong className="text-slate-800 dark:text-white">Cancellation:</strong> Cancel up to 10 mins before match start for 95% refund.</p></div>
-                                <div className="flex gap-3"><span className="font-bold text-orange-500">04.</span><p><strong className="text-slate-800 dark:text-white">Fair Play:</strong> No Hacks/Teaming. Level must be > 25.</p></div>
-                            </div>
+                        <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+                             <div className="flex gap-3"><span className="font-bold text-orange-500">01.</span><p><strong className="text-slate-800 dark:text-white">Teaming:</strong> Strictly prohibited. Teaming results in a permanent ban.</p></div>
+                             <div className="flex gap-3"><span className="font-bold text-orange-500">02.</span><p><strong className="text-slate-800 dark:text-white">Wait Time:</strong> Host will wait max 5 mins after start time.</p></div>
+                             <div className="flex gap-3"><span className="font-bold text-orange-500">03.</span><p><strong className="text-slate-800 dark:text-white">Cancellation:</strong> Cancel up to 10 mins before match start for 95% refund.</p></div>
+                             <div className="flex gap-3"><span className="font-bold text-orange-500">04.</span><p><strong className="text-slate-800 dark:text-white">Fair Play:</strong> No Hacks/Teaming. Level must be &gt; 25.</p></div>
                         </div>
-                        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800">
-                            <button onClick={() => { setShowRules(false); setRulesAccepted(true); }} className="w-full bg-slate-900 dark:bg-slate-700 text-white font-bold py-3.5 rounded-xl shadow-lg active:scale-95 transition">I UNDERSTAND & AGREE</button>
-                        </div>
+                        <button onClick={() => setShowRules(false)} className="w-full mt-6 bg-slate-900 dark:bg-slate-700 text-white font-bold py-3 rounded-xl">I Understand</button>
                     </div>
-                 </div>
+                </div>
+            )}
+            
+            {cancelModalOpen && tournamentToCancel && (
+                <ConfirmModal 
+                    title="Cancel Participation?" 
+                    message="You will receive a 95% refund of your entry fee." 
+                    confirmText="Yes, Cancel" 
+                    cancelText="No, Keep"
+                    onConfirm={handleCancelJoin} 
+                    onCancel={() => setCancelModalOpen(false)} 
+                    isDangerous={true} 
+                />
             )}
         </div>
     );
