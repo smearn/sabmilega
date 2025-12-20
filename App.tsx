@@ -6,6 +6,7 @@ import { auth, db } from "./firebase";
 import { Screen, Tab, ToastType, UserProfile } from "./types";
 import { generateReferralCode } from "./utils";
 import i18n from "./i18n"; // Import i18n
+import { Analytics } from "@vercel/analytics/react";
 
 import SplashScreen from "./components/SplashScreen";
 import LoginScreen from "./components/Auth/LoginScreen";
@@ -269,6 +270,7 @@ const App = () => {
 
   return (
     <div className={`min-h-screen font-sans selection:bg-blue-200 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white`}>
+       <Analytics />
        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
        {globalLoading && <LoadingOverlay message="Please Wait..." />}
        
