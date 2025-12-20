@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, get, update } from "firebase/database";
+import { Analytics } from "@vercel/analytics/react";
 import { auth, db } from "./firebase";
 import { Screen, Tab, ToastType, UserProfile } from "./types";
 import { generateReferralCode } from "./utils";
@@ -269,6 +270,7 @@ const App = () => {
 
   return (
     <div className={`min-h-screen font-sans selection:bg-blue-200 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white`}>
+       <Analytics />
        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
        {globalLoading && <LoadingOverlay message="Please Wait..." />}
        
