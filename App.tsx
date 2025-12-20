@@ -6,6 +6,7 @@ import { auth, db } from "./firebase";
 import { Screen, Tab, ToastType, UserProfile } from "./types";
 import { generateReferralCode } from "./utils";
 import i18n from "./i18n"; // Import i18n
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 import SplashScreen from "./components/SplashScreen";
 import LoginScreen from "./components/Auth/LoginScreen";
@@ -344,6 +345,7 @@ const App = () => {
              )}
           </>
        )}
+       <SpeedInsights />
     </div>
   );
 };
