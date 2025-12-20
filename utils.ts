@@ -1,4 +1,5 @@
-import { get, ref, update, increment } from "firebase/database";
+
+import { get, ref, update, increment, push } from "firebase/database";
 import { db } from "./firebase";
 
 export const generateReferralCode = (username: string) => {
@@ -84,14 +85,15 @@ export const updateSystemWallet = async (amount: number, reason: string) => {
                     added: increment(amount)
                 });
                 
-                // Optional: Log transaction for Super Admin
-                // await push(ref(db, `transactions/${superAdminId}`), {
-                //     type: amount > 0 ? 'game' : 'withdraw',
-                //     amount: Math.abs(amount),
-                //     date: Date.now(),
-                //     details: `System: ${reason}`,
-                //     category: 'added'
-                // });
+                // Log transaction for Super Admin (System Property Record)
+                await push(ref(db, `transactions/${superAdminId}`), {
+                    type: amount > 0 ? 'game_hosting' : 'withdraw', // Use distinctive types for system
+                    amount: Math.abs(amount),
+                    date: Date.now(),
+                    details: `System: ${reason}`,
+                    category: 'added',
+                    closingBalance: 0 // Optional for system logs
+                });
             }
         }
     } catch (e) {

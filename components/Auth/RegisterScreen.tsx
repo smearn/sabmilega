@@ -95,7 +95,9 @@ const RegisterScreen = ({ onNavigate, showToast }: { onNavigate: (s: Screen) => 
               showToast("Details fetched from Google! Please complete the form.", "success");
           }
       } catch (e: any) {
-          showToast("Failed to fetch details", "error");
+          console.error("Google Fetch Error:", e);
+          const msg = e.code ? e.code.replace('auth/', '').replace(/-/g, ' ') : (e.message || "Failed to fetch details");
+          showToast(msg, "error");
       } finally {
           setLoading(false);
       }

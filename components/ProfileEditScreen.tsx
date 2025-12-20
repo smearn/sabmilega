@@ -1,3 +1,4 @@
+
 import React, { useState } from "react";
 import { update, ref } from "firebase/database";
 import { db } from "../firebase";
@@ -17,19 +18,63 @@ const ProfileEditScreen = ({ user, onClose, onUpdate }: any) => {
    };
 
    const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      if(e.target.files && e.target.files[0]) {
-         setUploading(true);
-         let p = 0;
-         const int = setInterval(() => {
-            p += 10;
-            setProgress(p);
-            if(p >= 100) {
-               clearInterval(int);
-               setUploading(false);
-               alert("Profile picture updated (Simulation)");
-            }
-         }, 200);
-      }
+      const file = e.target.files?.[0];
+      if(!file) return;
+
+      setUploading(true);
+      // Fake progress for UX while processing
+      setProgress(20);
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+         const img = new Image();
+         img.onload = async () => {
+             setProgress(50);
+             const canvas = document.createElement('canvas');
+             let width = img.width;
+             let height = img.height;
+             
+             // Resize to max 512x512 to ensure it uploads quickly and fits DB comfortably
+             const MAX_SIZE = 512;
+             if (width > height) {
+                 if (width > MAX_SIZE) {
+                     height *= MAX_SIZE / width;
+                     width = MAX_SIZE;
+                 }
+             } else {
+                 if (height > MAX_SIZE) {
+                     width *= MAX_SIZE / height;
+                     height = MAX_SIZE;
+                 }
+             }
+             
+             canvas.width = width;
+             canvas.height = height;
+             
+             const ctx = canvas.getContext('2d');
+             if(ctx) {
+                 ctx.drawImage(img, 0, 0, width, height);
+                 // Strip metadata by creating new data URL
+                 const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                 setProgress(80);
+                 
+                 try {
+                     await update(ref(db, `users/${user.uid}`), { profilePic: dataUrl });
+                     onUpdate({...user, profilePic: dataUrl});
+                     setProgress(100);
+                 } catch(err: any) {
+                     alert("Error saving image: " + err.message);
+                 } finally {
+                     setUploading(false);
+                     setProgress(0);
+                 }
+             }
+         };
+         if (event.target?.result) {
+            img.src = event.target.result as string;
+         }
+      };
+      reader.readAsDataURL(file);
    };
 
    const getSocialIcon = (link: string) => {
@@ -63,7 +108,7 @@ const ProfileEditScreen = ({ user, onClose, onUpdate }: any) => {
             {uploading && (
                <div className="w-full max-w-xs mb-6">
                   <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
-                     <span>Uploading...</span>
+                     <span>Processing...</span>
                      <span>{progress}%</span>
                   </div>
                   <div className="w-full bg-slate-100 rounded-full h-2">

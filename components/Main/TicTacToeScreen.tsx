@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { UserProfile, ToastType } from "../../types";
-import { update, ref, push, onValue, remove, get, set, runTransaction } from "firebase/database";
+import { update, ref, push, onValue, remove, get, set, runTransaction, query, orderByChild, limitToFirst, onDisconnect } from "firebase/database";
 import { db } from "../../firebase";
 import { updateSystemWallet } from "../../utils";
 
@@ -55,65 +55,73 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         setGameState('finding');
         setSearchTimeLeft(60);
 
-        const queuePath = `ttt_queue/tier_${tier.entry}`;
+        const queueRoot = `ttt_queue/tier_${tier.entry}`;
         
-        // Matchmaking Logic: Try to find someone waiting, or wait ourselves
         try {
-            const result = await runTransaction(ref(db, queuePath), (queueData) => {
-                if (queueData) {
-                    // Someone is waiting! Grab them and clear queue
-                    return null; // Return null to delete the node (we matched)
-                } else {
-                    // No one waiting, we wait
-                    return { uid: user.uid, name: user.username, timestamp: Date.now() };
-                }
-            });
+            // 1. Look for waiting opponents (FIFO)
+            const q = query(ref(db, queueRoot), orderByChild('timestamp'), limitToFirst(10));
+            const snapshot = await get(q);
+            
+            let matched = false;
+            
+            if (snapshot.exists()) {
+                const potentialOpponents = snapshot.val();
+                // Iterate through potential opponents
+                for (const oppUid of Object.keys(potentialOpponents)) {
+                    if (oppUid === user.uid) continue; // Skip self if ghost entry
 
-            if (result.committed) {
-                const snapshot = result.snapshot;
-                if (snapshot.val() === null) {
-                    // We were the second one! We matched with the person who was in `queueData` (passed as arg to update function, but we need to re-read or assume). 
-                    // Actually, transaction result handling is tricky for "who was there".
-                    // Safer pattern for frontend-only matching:
+                    const oppRef = ref(db, `${queueRoot}/${oppUid}`);
+                    const newGameId = `${oppUid}_${user.uid}_${Date.now()}`;
                     
-                    // 1. Check if queue exists
-                    const queueSnap = await get(ref(db, queuePath));
-                    if (queueSnap.exists()) {
-                        const waitingUser = queueSnap.val();
-                        if (waitingUser.uid === user.uid) {
-                            // It's me (re-entry edge case), wait.
-                            waitForMatch(queuePath);
-                        } else {
-                            // Match Found! I am Player O, they are X
-                            const newGameId = `${waitingUser.uid}_${user.uid}_${Date.now()}`;
-                            const gameData = {
-                                players: {
-                                    X: { uid: waitingUser.uid, name: waitingUser.name },
-                                    O: { uid: user.uid, name: user.username }
-                                },
-                                board: Array(9).fill(""),
-                                turn: 'X',
-                                status: 'starting',
-                                tier: tier
-                            };
-                            
-                            // Create Game
-                            await set(ref(db, `ttt_games/${newGameId}`), gameData);
-                            // Notify waiting user by updating their queue entry with gameId
-                            await set(ref(db, `${queuePath}/match`), newGameId);
-                            
-                            setupGame(newGameId, 'O', waitingUser.name);
-                        }
-                    } else {
-                        // Queue empty, set myself
-                        await set(ref(db, queuePath), { uid: user.uid, name: user.username, timestamp: Date.now() });
-                        waitForMatch(queuePath);
+                    // Transaction to Atomically Claim the Opponent
+                    const result = await runTransaction(oppRef, (currentData) => {
+                        if (currentData === null) return null; // Node gone
+                        if (currentData.matchId) return; // Already matched
+                        return { ...currentData, matchId: newGameId, matchedBy: user.uid };
+                    });
+
+                    if (result.committed) {
+                        // Match Successful!
+                        matched = true;
+                        const opponent = result.snapshot.val();
+                        
+                        const gameData = {
+                            players: {
+                                X: { uid: oppUid, name: opponent.name },
+                                O: { uid: user.uid, name: user.username }
+                            },
+                            board: Array(9).fill(""),
+                            turn: 'X',
+                            status: 'starting',
+                            tier: tier,
+                            createdAt: Date.now()
+                        };
+                        
+                        // Create Game
+                        await set(ref(db, `ttt_games/${newGameId}`), gameData);
+                        
+                        // I am Player O (Joiner)
+                        setupGame(newGameId, 'O', opponent.name);
+                        break;
                     }
-                } else {
-                    // We set ourselves in queue
-                    waitForMatch(queuePath);
                 }
             }
+
+            if (!matched) {
+                // 2. No match found, queue myself
+                const myQueueRef = ref(db, `${queueRoot}/${user.uid}`);
+                await set(myQueueRef, { 
+                    uid: user.uid, 
+                    name: user.username, 
+                    timestamp: Date.now() 
+                });
+                
+                // Auto-remove if I disconnect
+                onDisconnect(myQueueRef).remove();
+
+                waitForMatch(queueRoot, user.uid);
+            }
+
         } catch (e) {
             console.error(e);
             showToast("Matchmaking Error", "error");
@@ -121,32 +129,42 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         }
     };
 
-    const waitForMatch = (queuePath: string) => {
-        setMySymbol('X'); // Waiters are X
-        const qRef = ref(db, queuePath);
+    const waitForMatch = (queueRoot: string, myUid: string) => {
+        setMySymbol('X'); // Waiters are X (Host)
+        const myRef = ref(db, `${queueRoot}/${myUid}`);
         
-        const listener = onValue(qRef, (snap) => {
+        const listener = onValue(myRef, (snap) => {
             const data = snap.val();
-            if (!data) return; // Node deleted (maybe manually or timeout)
+            if (!data) return; // Node deleted
 
-            if (data.match) {
-                // Match found!
-                setupGame(data.match, 'X', "Opponent"); // Name will be fetched in setup
-                // Remove queue entry strictly after connecting
-                remove(ref(db, queuePath)); 
+            if (data.matchId) {
+                // Matched!
+                // Cancel disconnect hook first so we don't accidentally delete if we nav away later (though we delete node anyway)
+                onDisconnect(myRef).cancel();
+                // Remove my queue node now that I have the game ID
+                remove(myRef);
+                
+                // Fetch opponent info from game or assume Opponent for now
+                // Since I am X, I will check game node in setupGame logic
+                setupGame(data.matchId, 'X', "Opponent");
             }
         });
         matchRef.current = listener;
     };
 
     const cancelSearch = async (silent = false) => {
-        if (matchRef.current) matchRef.current(); // Stop listening
+        if (matchRef.current) {
+            matchRef.current(); // Unsubscribe
+            matchRef.current = null;
+        }
         if (selectedTier) {
-            const queuePath = `ttt_queue/tier_${selectedTier.entry}`;
-            // Only remove if it's ME in the queue
-            const snap = await get(ref(db, queuePath));
+            const myQueuePath = `ttt_queue/tier_${selectedTier.entry}/${user.uid}`;
+            const myRef = ref(db, myQueuePath);
+            // Verify it's me before deleting (rare case of overwrite)
+            const snap = await get(myRef);
             if (snap.exists() && snap.val().uid === user.uid) {
-                await remove(ref(db, queuePath));
+                await remove(myRef);
+                onDisconnect(myRef).cancel();
             }
         }
         setGameState('lobby');
@@ -178,14 +196,23 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         setMySymbol(symbol);
         setGameState('countdown');
         
-        // Fetch Opponent Name accurately
-        const gSnap = await get(ref(db, `ttt_games/${gId}/players`));
-        if (gSnap.exists()) {
-            const p = gSnap.val();
-            setOpponentName(symbol === 'X' ? p.O.name : p.X.name);
-        } else {
-            setOpponentName(oppNamePlaceholder);
-        }
+        // Try to fetch opponent name. Retry a few times if game node propagation is slow.
+        let attempts = 0;
+        const fetchName = async () => {
+            const gSnap = await get(ref(db, `ttt_games/${gId}/players`));
+            if (gSnap.exists()) {
+                const p = gSnap.val();
+                setOpponentName(symbol === 'X' ? p.O.name : p.X.name);
+            } else {
+                if(attempts < 3) {
+                    attempts++;
+                    setTimeout(fetchName, 500);
+                } else {
+                    setOpponentName(oppNamePlaceholder);
+                }
+            }
+        };
+        fetchName();
     };
 
     // --- COUNTDOWN & FEE DEDUCTION ---

@@ -610,12 +610,7 @@ const HostMatch = ({ user, showToast, isEditing, initialData, onCancelEdit }: { 
           </div>
       )}
 
-      <div className="mb-4 flex items-center gap-2">
-         <div className="w-8 h-8 rounded-lg bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center text-orange-600 dark:text-orange-400">
-             <i className="fa-solid fa-fire"></i>
-         </div>
-         <span className="font-bold text-lg text-slate-800 dark:text-white">Hosting Free Fire</span>
-      </div>
+      {/* Removed "Hosting Free Fire" header */}
 
       <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-xl shadow-slate-200/50 dark:shadow-black/20 border border-slate-100 dark:border-slate-800 animate-[fade-enter_0.3s]">
           
