@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { UserProfile, ToastType } from "../../types";
-import { update, ref, push, onValue, remove, get, set, runTransaction, query, orderByChild, limitToFirst, onDisconnect } from "firebase/database";
+import { update, ref, push, onValue, remove, get, set, runTransaction, query, limitToFirst, onDisconnect } from "firebase/database";
 import { db } from "../../firebase";
 import { updateSystemWallet } from "../../utils";
 
@@ -18,13 +18,16 @@ const TIERS = [
 
 const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user: UserProfile, onBack: () => void, showToast: (m: string, t: ToastType) => void, onNavigateToWallet: () => void }) => {
     const [gameState, setGameState] = useState<GameState>('lobby');
+    const [rounds, setRounds] = useState<1 | 3 | 5>(1);
     const [selectedTier, setSelectedTier] = useState<{ entry: number, prize: number } | null>(null);
     const [board, setBoard] = useState<(PlayerSymbol | null)[]>(Array(9).fill(null));
     const [mySymbol, setMySymbol] = useState<PlayerSymbol | null>(null);
     const [currentTurn, setCurrentTurn] = useState<PlayerSymbol>('X');
     const [gameId, setGameId] = useState<string | null>(null);
     const [opponentName, setOpponentName] = useState("Opponent");
-    const [winner, setWinner] = useState<PlayerSymbol | 'Draw' | null>(null);
+    const [winner, setWinner] = useState<PlayerSymbol | 'Draw' | null>(null); // Match Winner
+    const [roundWinner, setRoundWinner] = useState<PlayerSymbol | 'Draw' | null>(null); // Current Round Winner
+    const [scores, setScores] = useState({ X: 0, O: 0 });
     
     // Timers
     const [countdown, setCountdown] = useState(3);
@@ -42,6 +45,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         };
     }, []);
 
+    // Filter available tiers based on rounds
+    const availableTiers = rounds === 1 ? TIERS : TIERS.filter(t => t.entry > 5);
+
     // --- LOBBY: Join Queue ---
     const handleJoinQueue = async (tier: { entry: number, prize: number }) => {
         const balance = (user.wallet.added || 0) + (user.wallet.winning || 0);
@@ -55,12 +61,10 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         setGameState('finding');
         setSearchTimeLeft(60);
 
-        const queueRoot = `ttt_queue/tier_${tier.entry}`;
+        const queueRoot = `ttt_queue/tier_${tier.entry}_r${rounds}`;
         
         try {
             // 1. Look for waiting opponents (FIFO)
-            // Note: Removed orderByChild('timestamp') to avoid "Index not defined" error on client without server rules deployment.
-            // limitToFirst(10) will fetch 10 waiting users by ID order, which is random enough for matchmaking.
             const q = query(ref(db, queueRoot), limitToFirst(10));
             const snapshot = await get(q);
             
@@ -94,7 +98,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                             },
                             board: Array(9).fill(""),
                             turn: 'X',
+                            scores: { X: 0, O: 0 },
                             status: 'starting',
+                            config: { totalRounds: rounds },
                             tier: tier,
                             createdAt: Date.now()
                         };
@@ -160,7 +166,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
             matchRef.current = null;
         }
         if (selectedTier) {
-            const myQueuePath = `ttt_queue/tier_${selectedTier.entry}/${user.uid}`;
+            const myQueuePath = `ttt_queue/tier_${selectedTier.entry}_r${rounds}/${user.uid}`;
             const myRef = ref(db, myQueuePath);
             // Verify it's me before deleting (rare case of overwrite)
             const snap = await get(myRef);
@@ -197,6 +203,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         setGameId(gId);
         setMySymbol(symbol);
         setGameState('countdown');
+        setScores({ X: 0, O: 0 });
+        setWinner(null);
+        setRoundWinner(null);
         
         // Try to fetch opponent name. Retry a few times if game node propagation is slow.
         let attempts = 0;
@@ -253,7 +262,12 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
 
             await update(ref(db, `users/${user.uid}/wallet`), { added, winning });
             await push(ref(db, `transactions/${user.uid}`), {
-                type: 'game', amount: cost, date: Date.now(), details: 'Tic Tac Toe Entry', category: 'winning', closingBalance: added + winning
+                type: 'game', 
+                amount: cost, 
+                date: Date.now(), 
+                details: 'Tic Tac Toe Entry', 
+                category: 'winning', // WalletScreen logic handles negativity by checking 'Entry' in details
+                closingBalance: added + winning
             });
             await updateSystemWallet(cost, "TTT Entry"); // System Profit
 
@@ -274,10 +288,18 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                 if (data) {
                     setBoard(data.board);
                     setCurrentTurn(data.turn);
+                    if (data.scores) setScores(data.scores);
+                    
                     if (data.winner) {
-                        handleGameEnd(data.winner);
-                    } else if (!data.board.includes("") && !data.board.includes(null)) {
-                        handleGameEnd('Draw'); // Fallback if server logic missed it
+                        // Match Over
+                        handleMatchEnd(data.winner);
+                    } else if (data.roundWinner) {
+                        // Round Over
+                        setRoundWinner(data.roundWinner);
+                        // Board clears automatically when host resets it in DB
+                    } else {
+                        // Playing state
+                        setRoundWinner(null);
                     }
                 }
             });
@@ -288,33 +310,58 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
     // Turn Timer (Visual mostly, can trigger auto-loss in robust backend)
     useEffect(() => {
         let interval: any;
-        if (gameState === 'playing' && !winner) {
+        if (gameState === 'playing' && !winner && !roundWinner) {
             setTurnTimer(15);
             interval = setInterval(() => {
                 setTurnTimer(prev => Math.max(0, prev - 1));
             }, 1000);
         }
         return () => clearInterval(interval);
-    }, [currentTurn, gameState]);
+    }, [currentTurn, gameState, roundWinner]);
 
     const handleCellClick = async (idx: number) => {
-        if (currentTurn !== mySymbol || board[idx] !== "" || winner || gameState !== 'playing') return;
+        if (currentTurn !== mySymbol || board[idx] !== "" || winner || gameState !== 'playing' || roundWinner) return;
         
-        // Optimistic Update
         const newBoard = [...board];
         newBoard[idx] = mySymbol;
         
-        // Check Win Logic
-        const win = checkWin(newBoard);
+        const roundWin = checkWin(newBoard);
+        const isDraw = !newBoard.includes("") && !newBoard.includes(null);
+        
         let updates: any = {
             [`ttt_games/${gameId}/board`]: newBoard,
             [`ttt_games/${gameId}/turn`]: mySymbol === 'X' ? 'O' : 'X'
         };
 
-        if (win) {
-            updates[`ttt_games/${gameId}/winner`] = win;
-        } else if (!newBoard.includes("") && !newBoard.includes(null)) {
-            updates[`ttt_games/${gameId}/winner`] = 'Draw';
+        if (roundWin || isDraw) {
+            const rWinner = roundWin ? mySymbol : 'Draw';
+            updates[`ttt_games/${gameId}/roundWinner`] = rWinner;
+            
+            // Score Update logic
+            let newScores = { ...scores };
+            if (roundWin && mySymbol) {
+                newScores[mySymbol] = (newScores[mySymbol] || 0) + 1;
+                updates[`ttt_games/${gameId}/scores`] = newScores;
+            }
+
+            // Check if Match Won
+            const targetWins = Math.ceil(rounds / 2);
+            // If someone reached target score, they win the match
+            if (newScores.X >= targetWins) {
+                updates[`ttt_games/${gameId}/winner`] = 'X';
+            } else if (newScores.O >= targetWins) {
+                updates[`ttt_games/${gameId}/winner`] = 'O';
+            } else {
+                // Next Round Logic
+                // We update board to empty after delay to let users see result
+                setTimeout(() => {
+                    update(ref(db, `ttt_games/${gameId}`), {
+                        board: Array(9).fill(""),
+                        roundWinner: null,
+                        turn: rWinner === 'Draw' ? (mySymbol === 'X' ? 'O' : 'X') : (mySymbol === 'X' ? 'O' : 'X') // Loser/Opposite starts? Simple: Alternate based on who played last
+                    });
+                }, 2000);
+            }
         }
 
         await update(ref(db), updates);
@@ -333,7 +380,8 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         return null;
     };
 
-    const handleGameEnd = async (result: string) => {
+    const handleMatchEnd = async (result: string) => {
+        if(winner) return; // Already handled
         setWinner(result as any);
         setGameState('result');
         if (!selectedTier) return;
@@ -349,24 +397,17 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
             });
             await updateSystemWallet(-prize, "TTT Payout");
             showToast("You Won!", "success");
-        } else if (result === 'Draw') {
-            // Refund
-            const refund = selectedTier.entry;
-            const newAdded = (user.wallet.added || 0) + refund;
-            
-            await update(ref(db, `users/${user.uid}/wallet`), { added: newAdded });
-            await push(ref(db, `transactions/${user.uid}`), {
-                type: 'bonus', amount: refund, date: Date.now(), details: 'TTT Draw Refund', category: 'added', closingBalance: newAdded + (user.wallet.winning || 0)
-            });
-            await updateSystemWallet(-refund, "TTT Refund");
-            showToast("Draw - Fee Refunded", "info");
-        }
-        // Loser does nothing (money already gone)
+        } 
+        // Note: For multi-round, 'Draw' match result is unlikely/impossible with odd number of rounds unless logic changes.
+        // We stick to Best of N logic where draws re-play or don't count. 
+        // Current logic re-plays round on draw implicitly by not incrementing score.
     };
 
     const resetGame = () => {
         setGameState('lobby');
         setWinner(null);
+        setRoundWinner(null);
+        setScores({X:0, O:0});
         setBoard(Array(9).fill(null));
         setGameId(null);
         setSelectedTier(null);
@@ -403,13 +444,27 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
             {/* CONTENT */}
             {gameState === 'lobby' && (
                 <div className="flex-1 p-5 overflow-y-auto">
-                    <div className="flex items-center gap-2 mb-4">
-                        <i className="fa-solid fa-trophy text-yellow-500"></i>
-                        <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Choose a Battle</h3>
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                            <i className="fa-solid fa-trophy text-yellow-500"></i>
+                            <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Choose Battle</h3>
+                        </div>
+                        
+                        <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-1">
+                            {[1, 3, 5].map((r) => (
+                                <button 
+                                    key={r} 
+                                    onClick={() => setRounds(r as any)}
+                                    className={`px-3 py-1 rounded text-[10px] font-bold transition ${rounds === r ? 'bg-blue-600 text-white shadow' : 'text-slate-500 hover:text-slate-300'}`}
+                                >
+                                    {r} Rd
+                                </button>
+                            ))}
+                        </div>
                     </div>
                     
                     <div className="grid grid-cols-1 gap-4">
-                        {TIERS.map((tier, idx) => (
+                        {availableTiers.map((tier, idx) => (
                             <div key={idx} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-lg relative overflow-hidden group hover:border-blue-500/50 transition-all duration-300">
                                 <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-slate-800 via-transparent to-transparent opacity-50"></div>
                                 
@@ -435,6 +490,12 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                             </div>
                         ))}
                     </div>
+                    {rounds > 1 && (
+                        <p className="text-center text-[10px] text-slate-500 mt-6">
+                            *Multi-round matches available for ₹10+ entry only. 
+                            <br/>Winner is best of {rounds} (First to {Math.ceil(rounds/2)} wins).
+                        </p>
+                    )}
                 </div>
             )}
 
@@ -450,7 +511,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                             </div>
                         </div>
                         <h3 className="text-2xl font-bold text-white mb-2 animate-pulse">Finding Opponent...</h3>
-                        <p className="text-slate-400 text-sm font-medium">Please wait while we match you</p>
+                        <p className="text-slate-400 text-sm font-medium">Wait while we match {rounds > 1 ? `(${rounds} Rounds)` : ''}</p>
                     </div>
                     
                     <button onClick={() => cancelSearch()} className="mt-12 px-8 py-3 rounded-xl border border-red-500/30 text-red-400 font-bold text-sm hover:bg-red-500/10 transition z-10">
@@ -472,8 +533,11 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                 <div className="flex-1 flex flex-col p-4 relative">
                     <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur-md p-4 rounded-2xl mb-8 border border-slate-800 shadow-xl">
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn === mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
-                            <div className="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center text-blue-400 font-black text-2xl mb-1 shadow-inner border border-blue-500/30">
+                            <div className="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center text-blue-400 font-black text-2xl mb-1 shadow-inner border border-blue-500/30 relative">
                                 {mySymbol}
+                                <span className="absolute -top-2 -right-2 w-6 h-6 bg-white text-slate-900 rounded-full flex items-center justify-center text-xs font-bold border-2 border-slate-900">
+                                    {scores[mySymbol || 'X']}
+                                </span>
                             </div>
                             <span className="text-[10px] font-bold text-slate-300">YOU</span>
                         </div>
@@ -482,24 +546,39 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                             <span className={`text-3xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>
                                 {turnTimer}
                             </span>
-                            <span className="text-[8px] text-slate-500 uppercase font-bold tracking-wider">Sec</span>
+                            <span className="text-[8px] text-slate-500 uppercase font-bold tracking-wider">
+                                {rounds > 1 ? `Target: ${Math.ceil(rounds/2)}` : 'Sec'}
+                            </span>
                         </div>
 
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn !== mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
-                            <div className="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-black text-2xl mb-1 shadow-inner border border-red-500/30">
+                            <div className="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-black text-2xl mb-1 shadow-inner border border-red-500/30 relative">
                                 {mySymbol === 'X' ? 'O' : 'X'}
+                                <span className="absolute -top-2 -right-2 w-6 h-6 bg-white text-slate-900 rounded-full flex items-center justify-center text-xs font-bold border-2 border-slate-900">
+                                    {scores[mySymbol === 'X' ? 'O' : 'X']}
+                                </span>
                             </div>
                             <span className="text-[10px] font-bold text-slate-300 truncate w-16 text-center">{opponentName.split(' ')[0]}</span>
                         </div>
                     </div>
 
                     {/* BOARD */}
-                    <div className="grid grid-cols-3 gap-3 aspect-square w-full max-w-sm mx-auto">
+                    <div className="grid grid-cols-3 gap-3 aspect-square w-full max-w-sm mx-auto relative">
+                        {roundWinner && !winner && (
+                            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm rounded-2xl animate-[fade-enter_0.2s]">
+                                <div className="text-center">
+                                    <div className="text-6xl mb-2">{roundWinner === 'Draw' ? '🤝' : '🏅'}</div>
+                                    <h3 className="text-2xl font-black text-white uppercase italic">{roundWinner === 'Draw' ? 'Round Draw' : `${roundWinner === mySymbol ? 'You Won' : 'Opponent Won'}`}</h3>
+                                    <p className="text-slate-300 text-xs font-bold">Next round starting...</p>
+                                </div>
+                            </div>
+                        )}
+                        
                         {board.map((cell, idx) => (
                             <button 
                                 key={idx} 
                                 onClick={() => handleCellClick(idx)}
-                                disabled={!!cell || currentTurn !== mySymbol || !!winner}
+                                disabled={!!cell || currentTurn !== mySymbol || !!winner || !!roundWinner}
                                 className={`rounded-2xl flex items-center justify-center text-6xl font-black shadow-lg transition-all active:scale-95 ${
                                     cell 
                                     ? 'bg-slate-800 border-2 border-slate-700' 
@@ -534,6 +613,19 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
                                 }`}>
                                     {winner === mySymbol ? 'VICTORY' : winner === 'Draw' ? 'DRAW' : 'DEFEAT'}
                                 </h2>
+                                
+                                {rounds > 1 && (
+                                    <div className="flex justify-center gap-4 mb-4">
+                                        <div className="text-center">
+                                            <p className="text-[10px] text-slate-500 uppercase font-bold">You</p>
+                                            <p className="text-2xl font-black text-white">{scores[mySymbol!]}</p>
+                                        </div>
+                                        <div className="text-center">
+                                            <p className="text-[10px] text-slate-500 uppercase font-bold">Opp</p>
+                                            <p className="text-2xl font-black text-white">{scores[mySymbol === 'X' ? 'O' : 'X']}</p>
+                                        </div>
+                                    </div>
+                                )}
                                 
                                 <p className="text-slate-400 font-medium mb-8 text-sm">
                                     {winner === mySymbol 

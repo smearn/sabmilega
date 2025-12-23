@@ -18,6 +18,7 @@ import ReferEarnScreen from "./components/Main/ReferEarnScreen";
 import CreateTournamentScreen from "./components/Main/CreateTournamentScreen"; 
 import GameDetailsScreen from "./components/Main/GameDetailsScreen";
 import TicTacToeScreen from "./components/Main/TicTacToeScreen";
+import BingoScreen from "./components/Main/BingoScreen"; // Imported Bingo
 import AdminScreen from "./components/Admin/AdminScreen";
 import ProfileEditScreen from "./components/ProfileEditScreen";
 import { Toast } from "./components/Shared/Toast";
@@ -83,7 +84,7 @@ const App = () => {
         }
     };
 
-    const interval = setInterval(measureLatency, 5000);
+    const interval = setInterval(measureLatency, 3000); // 3s update
     measureLatency(); 
 
     return () => {
@@ -248,10 +249,10 @@ const App = () => {
                         <i className="fa-solid fa-wallet text-blue-600 dark:text-blue-400"></i>
                         <span className="font-medium text-sm">₹{userProfile ? (userProfile.wallet.added + userProfile.wallet.winning) : 0}</span>
                     </button>
-                    {/* Latency Indicator to the right of wallet */}
+                    {/* Latency Indicator */}
                     {latency !== null && (
-                        <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-bold ${isSlowConnection ? 'text-orange-500 bg-orange-500/10' : 'text-green-500 bg-green-500/10'}`}>
-                            <div className={`w-1.5 h-1.5 rounded-full ${isSlowConnection ? 'bg-orange-500' : 'bg-green-500'} animate-pulse`}></div>
+                        <div className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[9px] font-bold shadow-sm transition-colors ${isSlowConnection ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'}`}>
+                            <i className={`fa-solid fa-signal ${isSlowConnection ? 'animate-pulse' : ''}`}></i>
                             {latency}ms
                         </div>
                     )}
@@ -330,6 +331,8 @@ const App = () => {
                      <GameDetailsScreen gameId={selectedGame} onBack={() => setSelectedGame(null)} user={userProfile} showToast={showToast} onNavigateToWallet={navigateToWallet} />
                  ) : selectedGame === 'TICTACTOE' ? (
                      <TicTacToeScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} />
+                 ) : selectedGame === 'BINGO' ? (
+                     <BingoScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} />
                  ) : (
                     <>
                        {activeTab === 'home' && <HomeScreen user={userProfile} setTab={handleTabChange} onRefresh={handleRefresh} onSelectGame={setSelectedGame} />}

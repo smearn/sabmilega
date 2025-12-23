@@ -50,18 +50,20 @@ const HomeScreen = ({ user, setTab, onRefresh, onSelectGame }: { user: UserProfi
              </div>
           </div>
 
-          {/* Tic Tac Toe - Now Active */}
-          <div onClick={() => onSelectGame('TICTACTOE')} className="bg-white rounded-2xl p-4 shadow-md flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-105 transition active:scale-95 border border-slate-100">
-             <i className="fa-solid fa-xmarks-lines text-blue-500 text-3xl"></i>
-             <span className="font-medium text-slate-700 text-sm">Tic Tac Toe</span>
-             <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded font-bold">{t('play_now')}</span>
+          {/* Tic Tac Toe */}
+          <div onClick={() => onSelectGame('TICTACTOE')} className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-md flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-105 transition active:scale-95 border border-slate-100 dark:border-slate-700 relative overflow-hidden">
+             <div className="absolute top-0 right-0 w-16 h-16 bg-blue-500/10 rounded-bl-full"></div>
+             <i className="fa-solid fa-xmarks-lines text-blue-500 text-3xl z-10"></i>
+             <span className="font-bold text-slate-700 dark:text-white text-sm z-10">Tic Tac Toe</span>
+             <span className="text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded font-bold z-10">{t('play_now')}</span>
           </div>
           
-          {/* Ludo - Coming Soon */}
-          <div className="bg-white rounded-2xl p-4 shadow-md flex flex-col items-center justify-center gap-2 opacity-60 cursor-not-allowed">
-             <i className="fa-solid fa-dice text-purple-500 text-3xl"></i>
-             <span className="font-medium text-slate-700 text-sm">Ludo</span>
-             <span className="text-[10px] bg-slate-200 px-2 rounded text-slate-500 font-medium">{t('coming_soon')}</span>
+          {/* Bingo (Replaced Ludo) */}
+          <div onClick={() => onSelectGame('BINGO')} className="bg-gradient-to-br from-purple-100 to-pink-100 dark:from-slate-800 dark:to-slate-800 rounded-2xl p-4 shadow-md flex flex-col items-center justify-center gap-2 cursor-pointer hover:scale-105 transition active:scale-95 border border-purple-200 dark:border-slate-700 relative overflow-hidden group">
+             <div className="absolute inset-0 bg-gradient-to-r from-purple-500/10 to-pink-500/10 opacity-0 group-hover:opacity-100 transition"></div>
+             <i className="fa-solid fa-table-cells text-purple-600 text-3xl z-10"></i>
+             <span className="font-bold text-slate-800 dark:text-white text-sm z-10">Bingo</span>
+             <span className="text-[10px] bg-purple-500 text-white px-2 py-0.5 rounded font-bold z-10 shadow-sm shadow-purple-500/30">HOT 🔥</span>
           </div>
        </div>
        </PullToRefresh>

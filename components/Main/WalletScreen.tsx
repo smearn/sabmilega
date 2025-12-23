@@ -183,7 +183,8 @@ const WalletScreen = ({ user, showToast }: { user: UserProfile, showToast: (m: s
 
   // Summary Logic for filtered view
   const summary = filteredTx.reduce((acc, t) => {
-      const isCredit = t.type === 'add' || t.type === 'bonus' || t.type === 'transfer_received' || (t.type === 'game' && t.category === 'winning') || t.type === 'p2p_buy';
+      const isEntry = t.details?.toLowerCase().includes('entry') || t.details?.toLowerCase().includes('joined');
+      const isCredit = t.type === 'add' || t.type === 'bonus' || t.type === 'transfer_received' || (t.type === 'game' && t.category === 'winning' && !isEntry) || t.type === 'p2p_buy';
       if (isCredit) acc.credit += t.amount;
       else acc.debit += t.amount;
       return acc;
@@ -211,12 +212,14 @@ const WalletScreen = ({ user, showToast }: { user: UserProfile, showToast: (m: s
               <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-2 ml-2 bg-slate-100 dark:bg-slate-800 inline-block px-2 py-0.5 rounded">{dateKey}</div>
               <div className="space-y-3">
                   {grouped[dateKey].map(tx => {
+                      const isEntry = tx.details?.toLowerCase().includes('entry') || tx.details?.toLowerCase().includes('joined');
+                      
                       const isPositive = 
                           tx.type === 'add' || 
                           tx.type === 'bonus' || 
                           tx.type === 'transfer_received' ||
                           tx.type === 'p2p_buy' ||
-                          (tx.type === 'game' && tx.category === 'winning'); 
+                          (tx.type === 'game' && tx.category === 'winning' && !isEntry); // Ensure entries are treated as expenses
 
                       const isNegative = !isPositive;
                       const amountColor = isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400';
