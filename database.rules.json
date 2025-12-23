@@ -1,0 +1,18 @@
+
+{
+  "rules": {
+    ".read": true,
+    ".write": true,
+    "users": {
+      ".indexOn": ["referralCode", "username", "email", "phoneNumber"]
+    },
+    "tournaments": {
+      ".indexOn": ["createdBy", "startTime", "status"]
+    },
+    "ttt_queue": {
+      "$tier": {
+        ".indexOn": ["timestamp"]
+      }
+    }
+  }
+}

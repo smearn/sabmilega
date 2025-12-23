@@ -59,7 +59,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet }: { user
         
         try {
             // 1. Look for waiting opponents (FIFO)
-            const q = query(ref(db, queueRoot), orderByChild('timestamp'), limitToFirst(10));
+            // Note: Removed orderByChild('timestamp') to avoid "Index not defined" error on client without server rules deployment.
+            // limitToFirst(10) will fetch 10 waiting users by ID order, which is random enough for matchmaking.
+            const q = query(ref(db, queueRoot), limitToFirst(10));
             const snapshot = await get(q);
             
             let matched = false;
