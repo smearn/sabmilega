@@ -264,6 +264,9 @@ const App = () => {
   };
 
   const BottomBar = () => {
+    // Hide bottom bar during games for full immersion
+    if (selectedGame) return null;
+
     return (
       <div className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 border-t border-slate-100 dark:border-slate-800 px-6 py-2 flex justify-between items-center z-[100] pb-safe backdrop-blur-md">
          {[
@@ -330,9 +333,9 @@ const App = () => {
                  ) : selectedGame === 'FREE FIRE' ? (
                      <GameDetailsScreen gameId={selectedGame} onBack={() => setSelectedGame(null)} user={userProfile} showToast={showToast} onNavigateToWallet={navigateToWallet} />
                  ) : selectedGame === 'TICTACTOE' ? (
-                     <TicTacToeScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} />
+                     <TicTacToeScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} latency={latency} />
                  ) : selectedGame === 'BINGO' ? (
-                     <BingoScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} />
+                     <BingoScreen user={userProfile} onBack={() => setSelectedGame(null)} showToast={showToast} onNavigateToWallet={navigateToWallet} latency={latency} />
                  ) : (
                     <>
                        {activeTab === 'home' && <HomeScreen user={userProfile} setTab={handleTabChange} onRefresh={handleRefresh} onSelectGame={setSelectedGame} />}
