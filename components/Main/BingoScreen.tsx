@@ -5,7 +5,7 @@ import { update, ref, push, onValue, remove, get, set, runTransaction, query, li
 import { db } from "../../firebase";
 import { updateSystemWallet } from "../../utils";
 
-type GameState = 'lobby' | 'finding' | 'countdown' | 'playing' | 'result';
+type GameState = 'lobby' | 'finding' | 'search_timeout' | 'matched' | 'countdown' | 'playing' | 'result';
 
 const TIERS = [
     { entry: 5, prize: 9 },
@@ -22,6 +22,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
     const [selectedTier, setSelectedTier] = useState<{ entry: number, prize: number } | null>(null);
     const [gameId, setGameId] = useState<string | null>(null);
     const [opponentName, setOpponentName] = useState("Opponent");
+    const [opponentPic, setOpponentPic] = useState("");
     const [isMyTurn, setIsMyTurn] = useState(false);
     
     // Game Data
@@ -31,35 +32,35 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
     const [winnerUid, setWinnerUid] = useState<string | null>(null);
     const [lastCalledNumber, setLastCalledNumber] = useState<number | null>(null);
     const [hearts, setHearts] = useState({ host: 3, joiner: 3 });
+    const [exitReason, setExitReason] = useState<string | null>(null);
 
-    // Finding Page Animations
-    const [cyclingIndex, setCyclingIndex] = useState(0);
-
-    // UI Helpers
+    // UI State
     const [showHowTo, setShowHowTo] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [localHistory, setLocalHistory] = useState<any[]>([]);
+    const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+    const [showGameExitConfirm, setShowGameExitConfirm] = useState(false);
+    const [cyclingIndex, setCyclingIndex] = useState(0);
 
     // Timers
     const [countdown, setCountdown] = useState(3);
     const [searchTimeLeft, setSearchTimeLeft] = useState(60);
+    const [timeoutCountdown, setTimeoutCountdown] = useState(3);
     const [turnTimer, setTurnTimer] = useState(15);
 
     const matchRef = useRef<any>(null);
     const payoutProcessed = useRef(false);
+    const stateRef = useRef<GameState>('lobby');
 
-    const generateBoard = () => {
-        const nums = Array.from({ length: 25 }, (_, i) => i + 1);
-        return nums.sort(() => Math.random() - 0.5);
-    };
+    useEffect(() => { stateRef.current = gameState; }, [gameState]);
 
     useEffect(() => {
         return () => {
-            if (gameState === 'finding' && selectedTier) {
+            if (stateRef.current === 'finding' || stateRef.current === 'matched') {
                 cancelSearch(true);
             }
         };
-    }, [gameState, selectedTier]);
+    }, []);
 
     // Cycling avatars effect
     useEffect(() => {
@@ -72,7 +73,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         return () => clearInterval(interval);
     }, [gameState]);
 
-    // FIXED SEARCH TIMER
+    // Search Timer Logic
     useEffect(() => {
         let interval: any;
         if (gameState === 'finding') {
@@ -81,15 +82,33 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 setSearchTimeLeft(prev => {
                     if (prev <= 1) {
                         clearInterval(interval);
-                        cancelSearch();
-                        showToast("Searching failed. No players online.", "info");
+                        setGameState('search_timeout');
+                        setTimeoutCountdown(3);
                         return 0;
                     }
                     return prev - 1;
                 });
             }, 1000);
         }
-        return () => { if(interval) clearInterval(interval); };
+        return () => clearInterval(interval);
+    }, [gameState]);
+
+    // Search Timeout Auto-Redirect
+    useEffect(() => {
+        let interval: any;
+        if (gameState === 'search_timeout') {
+            interval = setInterval(() => {
+                setTimeoutCountdown(prev => {
+                    if (prev <= 1) {
+                        clearInterval(interval);
+                        cancelSearch(true);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => clearInterval(interval);
     }, [gameState]);
 
     const handleJoinQueue = async (tier: { entry: number, prize: number }) => {
@@ -101,6 +120,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         }
 
         payoutProcessed.current = false;
+        setExitReason(null);
         setSelectedTier(tier);
         setGameState('finding');
 
@@ -181,6 +201,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
             }
         }
         setGameState('lobby');
+        setShowLeaveConfirm(false);
         if (!silent) showToast("Search Cancelled", "info");
     };
 
@@ -190,8 +211,8 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         setMarkedNumbers([]);
         setLinesCompleted(0);
         setWinnerUid(null);
-        setGameState('countdown');
         setHearts({ host: 3, joiner: 3 });
+        setGameState('matched');
         
         let attempts = 0;
         const fetchDetails = async () => {
@@ -199,13 +220,30 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
             if(snap.exists()) {
                 const val = snap.val();
                 const isHost = val.players.host.uid === user.uid;
-                setOpponentName(isHost ? val.players.joiner.name : val.players.host.name);
+                const opName = isHost ? val.players.joiner.name : val.players.host.name;
+                setOpponentName(opName);
+                setOpponentPic(`https://api.dicebear.com/7.x/avataaars/svg?seed=${opName}`);
                 setIsMyTurn(val.turn === user.uid);
             } else if (attempts < 3) {
                 attempts++; setTimeout(fetchDetails, 500);
+            } else {
+                setOpponentName(placeholderName);
+                setOpponentPic(`https://api.dicebear.com/7.x/avataaars/svg?seed=${placeholderName}`);
             }
         };
         fetchDetails();
+
+        setTimeout(() => {
+            if(stateRef.current === 'matched') {
+                setGameState('countdown');
+                setCountdown(3);
+            }
+        }, 3000);
+    };
+
+    const generateBoard = () => {
+        const nums = Array.from({ length: 25 }, (_, i) => i + 1);
+        return nums.sort(() => Math.random() - 0.5);
     };
 
     useEffect(() => {
@@ -258,7 +296,10 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                     }
                     if (data.hearts) setHearts(data.hearts);
                     setIsMyTurn(data.turn === user.uid);
-                    if (data.winner) handleGameEnd(data.winner);
+                    if (data.winner) {
+                        if (data.exitReason) setExitReason(data.exitReason);
+                        handleGameEnd(data.winner);
+                    }
                 }
             });
             return () => unsub();
@@ -307,6 +348,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         };
         if (nextHearts <= 0) {
             updates[`bingo_games/${gameId}/winner`] = nextTurn;
+            updates[`bingo_games/${gameId}/exitReason`] = "TIMEOUT";
         }
         await update(ref(db), updates);
         showToast("Time Out! Heart Lost.", "error");
@@ -320,6 +362,20 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         const nextTurn = p.host.uid === user.uid ? p.joiner.uid : p.host.uid;
         await push(ref(db, `bingo_games/${gameId}/calls`), num);
         await update(ref(db, `bingo_games/${gameId}`), { turn: nextTurn });
+    };
+
+    const handleLeaveGame = async () => {
+        if (!gameId || winnerUid) return;
+        const snap = await get(ref(db, `bingo_games/${gameId}`));
+        if(!snap.exists()) return;
+        const p = snap.val().players;
+        const oppUid = p.host.uid === user.uid ? p.joiner.uid : p.host.uid;
+        
+        await update(ref(db, `bingo_games/${gameId}`), {
+            winner: oppUid,
+            exitReason: "LEFT"
+        });
+        setShowGameExitConfirm(false);
     };
 
     const checkLines = (grid: number[], marked: number[]) => {
@@ -351,6 +407,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 type: 'game', amount: prize, date: Date.now(), details: 'Bingo Win', category: 'winning', closingBalance: newWinning + (user.wallet.added || 0)
             });
             await updateSystemWallet(-prize, "Bingo Payout");
+            showToast("Victory!", "success");
         }
     };
 
@@ -360,18 +417,9 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         setGameId(null);
         setSelectedTier(null);
         payoutProcessed.current = false;
-    };
-
-    const handlePlayAgain = () => {
-        const prevTier = selectedTier;
-        if (!prevTier) {
-            resetGame();
-            return;
-        }
-        setWinnerUid(null);
-        setGameId(null);
-        payoutProcessed.current = false;
-        handleJoinQueue(prevTier);
+        setShowLeaveConfirm(false);
+        setShowGameExitConfirm(false);
+        setExitReason(null);
     };
 
     const fetchHistory = async () => {
@@ -393,35 +441,46 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
 
     return (
         <div className="fixed inset-0 bg-slate-950 text-white flex flex-col font-sans z-[150]">
-            {/* Header - Hidden during finding and result */}
-            {gameState !== 'finding' && gameState !== 'result' && (
+            {/* Header logic adjusted for finding screen requirement */}
+            {(gameState === 'lobby' || gameState === 'finding' || gameState === 'search_timeout') && (
                 <div className="bg-gradient-to-b from-purple-900 to-slate-950 border-b border-purple-900/50 pb-6 pt-4 px-6 shadow-xl relative overflow-hidden shrink-0">
                     <div className="absolute top-0 right-0 w-40 h-40 bg-pink-600/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
                     <div className="flex items-start justify-between relative z-10">
-                        <button onClick={onBack} className="w-10 h-10 rounded-xl bg-slate-800/50 border border-white/10 flex items-center justify-center hover:bg-slate-700 transition">
-                            <i className="fa-solid fa-arrow-left text-slate-300"></i>
-                        </button>
+                        {gameState === 'lobby' ? (
+                            <button onClick={onBack} className="w-10 h-10 rounded-xl bg-slate-800/50 border border-white/10 flex items-center justify-center hover:bg-slate-700 transition">
+                                <i className="fa-solid fa-arrow-left text-slate-300"></i>
+                            </button>
+                        ) : (
+                            <button onClick={() => setShowLeaveConfirm(true)} className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 hover:bg-red-500/20 transition active:scale-95">
+                                <i className="fa-solid fa-right-from-bracket"></i>
+                            </button>
+                        )}
                         <div className="flex items-center gap-2">
+                            {latency !== null && (
+                                <div className="flex items-center gap-1 bg-slate-900/50 px-2 py-1 rounded-full border border-purple-500/30 text-[10px] font-bold text-slate-400">
+                                    <i className="fa-solid fa-signal text-green-500"></i> {latency}ms
+                                </div>
+                            )}
                             <button onClick={fetchHistory} className="w-10 h-10 rounded-xl bg-slate-800/50 border border-white/10 flex items-center justify-center text-slate-300"><i className="fa-solid fa-clock-rotate-left"></i></button>
                             <button onClick={() => setShowHowTo(true)} className="w-10 h-10 rounded-xl bg-slate-800/50 border border-white/10 flex items-center justify-center text-slate-300"><i className="fa-solid fa-circle-info"></i></button>
                         </div>
                     </div>
-                    
-                    <div className="mt-6 flex items-center gap-4">
-                        <div className="w-16 h-16 bg-gradient-to-br from-pink-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-500/30 rotate-3">
-                            <i className="fa-solid fa-table-cells text-3xl text-white"></i>
+                    {gameState === 'lobby' && (
+                        <div className="mt-6 flex items-center gap-4 animate-[fade-enter_0.3s]">
+                            <div className="w-16 h-16 bg-gradient-to-br from-pink-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-500/30 rotate-3">
+                                <i className="fa-solid fa-table-cells text-3xl text-white"></i>
+                            </div>
+                            <div>
+                                <h1 className="text-2xl font-extrabold tracking-tight text-white drop-shadow-md">BINGO</h1>
+                                <p className="text-xs text-purple-200 font-medium bg-purple-900/40 px-2 py-0.5 rounded-lg w-fit mt-1 border border-purple-500/20">Classic 1 vs 1</p>
+                            </div>
                         </div>
-                        <div>
-                            <h1 className="text-2xl font-extrabold tracking-tight text-white drop-shadow-md">BINGO</h1>
-                            <p className="text-xs text-purple-200 font-medium bg-purple-900/40 px-2 py-0.5 rounded-lg w-fit mt-1 border border-purple-500/20">Classic 1 vs 1</p>
-                        </div>
-                    </div>
+                    )}
                 </div>
             )}
 
-            {/* LOBBY */}
             {gameState === 'lobby' && (
-                <div className="flex-1 p-5 overflow-y-auto">
+                <div className="flex-1 p-5 overflow-y-auto animate-[fade-enter_0.3s]">
                     <div className="flex items-center gap-2 mb-4">
                         <i className="fa-solid fa-fire text-orange-500 animate-pulse"></i>
                         <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Select Table</h3>
@@ -444,77 +503,108 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 </div>
             )}
 
-            {/* FINDING OVERHAUL */}
             {gameState === 'finding' && (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden">
+                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden animate-[fade-enter_0.3s]">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-purple-900/20 via-slate-950 to-slate-950"></div>
                     
-                    {/* Top Timer Circle */}
                     <div className="relative z-10 mb-12 flex flex-col items-center">
                         <div className="w-24 h-24 rounded-full border-4 border-slate-800 flex items-center justify-center relative">
                             <div className="absolute inset-0 border-4 border-pink-500 rounded-full border-t-transparent animate-spin"></div>
                             <span className="text-3xl font-black text-white">{searchTimeLeft}</span>
                         </div>
-                        <div className="mt-4 flex items-center gap-2 bg-slate-900/50 px-3 py-1 rounded-full border border-white/5 backdrop-blur-sm">
-                            <div className={`w-2 h-2 rounded-full ${latency ? 'bg-pink-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{latency ? `Connection: Stable (${latency}ms)` : 'Connecting...'}</span>
-                        </div>
                     </div>
 
-                    {/* VS Player Icons */}
                     <div className="flex items-center gap-6 relative z-10 mb-16">
-                        {/* Me */}
                         <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out]">
                             <div className="relative">
                                 <div className="w-28 h-28 rounded-full border-4 border-pink-500 p-1 shadow-[0_0_20px_rgba(236,72,153,0.3)] overflow-hidden bg-slate-800">
                                     <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
                                 </div>
                                 <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-pink-600 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg rotate-12">
-                                    <i className="fa-solid fa-bolt-lightning text-white text-xl"></i>
+                                    <i className="fa-solid fa-check text-white text-lg"></i>
                                 </div>
                             </div>
-                            <span className="text-xs font-bold text-pink-400 uppercase tracking-widest">Player 1</span>
+                            <span className="text-xs font-bold text-pink-400 uppercase tracking-widest">YOU</span>
                         </div>
 
-                        {/* VS Text */}
                         <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center border border-white/10 backdrop-blur-sm">
                             <span className="text-sm font-black italic text-slate-500">VS</span>
                         </div>
 
-                        {/* Opponent Cycler */}
                         <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out_0.1s]">
                             <div className="relative">
                                 <div className="w-28 h-28 rounded-full border-4 border-slate-800 p-1 overflow-hidden bg-slate-800">
                                     <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${RANDOM_NAMES[cyclingIndex]}`} className="w-full h-full rounded-full object-cover transition-opacity duration-150" />
                                 </div>
                                 <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-slate-700 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg -rotate-12">
-                                    <i className="fa-solid fa-question text-white text-xl"></i>
+                                    <i className="fa-solid fa-magnifying-glass text-white text-sm animate-pulse"></i>
                                 </div>
                             </div>
                             <span className="text-xs font-bold text-slate-500 animate-pulse uppercase tracking-widest">Searching</span>
                         </div>
                     </div>
-                    
                     <h3 className="text-lg font-bold text-white mb-8 animate-pulse relative z-10 tracking-widest uppercase">Finding Match...</h3>
-
-                    <button onClick={() => cancelSearch()} className="px-10 py-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-pink-500 font-black text-xs uppercase tracking-widest hover:bg-pink-500/10 active:scale-95 transition-all z-10 shadow-xl">
-                        Cancel Search
-                    </button>
                 </div>
             )}
 
-            {/* COUNTDOWN */}
+            {gameState === 'search_timeout' && (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden">
+                    <div className="absolute inset-0 bg-red-600/5 animate-pulse"></div>
+                    <div className="relative z-10 text-center">
+                        <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6 text-red-500 border border-red-500/30">
+                            <i className="fa-solid fa-user-clock text-4xl"></i>
+                        </div>
+                        <h2 className="text-2xl font-black text-white uppercase italic mb-2 tracking-tight">No Player Found</h2>
+                        <p className="text-slate-400 text-sm mb-12 max-w-xs mx-auto">Currently there are no opponents in this table. Please try another tier or wait.</p>
+                        
+                        <div className="flex flex-col items-center">
+                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-4">Returning to Lobby</p>
+                            <div className="text-6xl font-black text-white tabular-nums animate-bounce">
+                                {timeoutCountdown}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {gameState === 'matched' && (
+                <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 p-8 relative overflow-hidden animate-[fade-enter_0.3s]">
+                     <div className="absolute inset-0 bg-pink-600/10 opacity-30 animate-pulse"></div>
+                     <div className="text-5xl font-black text-white italic tracking-tighter animate-[bounce_0.5s_infinite] drop-shadow-lg mb-12 text-center uppercase">
+                        Bingo Battle Start!
+                     </div>
+                     <div className="flex items-center gap-12 relative z-10">
+                        <div className="flex flex-col items-center gap-3 animate-[slide-down_0.5s_ease-out]">
+                            <div className="w-32 h-32 rounded-full border-4 border-pink-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(236,72,153,0.5)]">
+                                <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
+                            </div>
+                            <span className="text-sm font-black text-pink-400 uppercase tracking-widest">{user.username}</span>
+                        </div>
+                        <div className="text-4xl font-black text-slate-700 italic">VS</div>
+                        <div className="flex flex-col items-center gap-3 animate-[slide-up_0.5s_ease-out]">
+                            <div className="w-32 h-32 rounded-full border-4 border-purple-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(168,85,247,0.5)]">
+                                <img src={opponentPic} className="w-full h-full rounded-full object-cover" />
+                            </div>
+                            <span className="text-sm font-black text-purple-400 uppercase tracking-widest">{opponentName}</span>
+                        </div>
+                     </div>
+                </div>
+            )}
+
             {gameState === 'countdown' && (
-                <div className="flex-1 flex flex-col items-center justify-center bg-slate-900">
+                <div className="flex-1 flex flex-col items-center justify-center bg-slate-900 animate-[fade-enter_0.3s]">
                     <div className="text-[120px] font-black text-transparent bg-clip-text bg-gradient-to-b from-pink-400 to-purple-600 animate-bounce">{countdown > 0 ? countdown : "GO!"}</div>
                 </div>
             )}
 
-            {/* GAME BOARD */}
             {gameState === 'playing' && (
-                <div className="flex-1 flex flex-col p-4 max-w-md mx-auto w-full overflow-y-auto">
-                    {/* Header Info */}
-                    <div className="flex justify-between items-center mb-6 bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
+                <div className="flex-1 flex flex-col p-4 max-w-md mx-auto w-full overflow-y-auto animate-[fade-enter_0.3s]">
+                    <div className="flex justify-between items-center mb-6 bg-slate-900/50 p-3 rounded-2xl border border-slate-800 relative">
+                        {/* Leave Button */}
+                        <button onClick={() => setShowGameExitConfirm(true)} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg hover:scale-110 active:scale-95 transition-transform z-30">
+                            <i className="fa-solid fa-right-from-bracket text-xs"></i>
+                        </button>
+
                         <div className={`flex flex-col items-center px-4 transition-opacity ${isMyTurn ? 'opacity-100 scale-105' : 'opacity-50'}`}>
                             <span className="text-[10px] font-bold text-slate-400 uppercase">You</span>
                             <div className="flex gap-0.5 my-0.5">
@@ -553,42 +643,33 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                             );
                         })}
                     </div>
-                    
                     <p className="text-center text-xs text-slate-500 mt-6 font-medium">{isMyTurn ? "Your Turn - Pick a number" : `Waiting for ${opponentName}...`}</p>
                 </div>
             )}
 
-            {/* DEDICATED RESULT PAGE */}
-            {gameState === 'result' && winnerUid && (
-                <div className="flex-1 flex flex-col items-center justify-center p-6 bg-slate-950 animate-[fade-enter_0.3s]">
+            {gameState === 'result' && (
+                <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center p-6 bg-slate-950 animate-[fade-enter_0.3s]">
                     <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 text-center shadow-2xl relative overflow-hidden">
                         <div className={`absolute top-0 left-0 w-full h-2 ${winnerUid === user.uid ? 'bg-pink-500' : 'bg-red-500'}`}></div>
-                        
                         <div className="relative z-10">
-                            <div className="text-7xl mb-6 transform scale-125 animate-bounce">
-                                {winnerUid === user.uid ? '🏆' : '💀'}
-                            </div>
-
-                            <h2 className={`text-4xl font-black mb-1 uppercase tracking-tighter italic ${winnerUid === user.uid ? 'text-pink-500' : 'text-red-500'}`}>
-                                {winnerUid === user.uid ? 'VICTORY' : 'DEFEAT'}
-                            </h2>
+                            <div className="text-7xl mb-6 transform scale-125 animate-bounce">{winnerUid === user.uid ? '🏆' : '💀'}</div>
+                            <h2 className={`text-4xl font-black mb-1 uppercase italic tracking-tighter ${winnerUid === user.uid ? 'text-pink-500' : 'text-red-500'}`}>{winnerUid === user.uid ? 'VICTORY' : 'DEFEAT'}</h2>
                             
-                            <div className="flex items-center justify-center gap-2 mb-8">
-                                <div className="h-[1px] bg-slate-800 flex-1"></div>
-                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Bingo Battle Result</span>
-                                <div className="h-[1px] bg-slate-800 flex-1"></div>
-                            </div>
-
-                            {/* Prize section */}
-                            {winnerUid === user.uid && selectedTier && (
-                                <div className="bg-pink-500/10 border border-pink-500/20 rounded-2xl p-4 mb-8">
-                                    <p className="text-[10px] text-pink-500/70 font-bold uppercase mb-1">Profit Credited</p>
-                                    <p className="text-3xl font-black text-pink-400">₹{selectedTier.prize}</p>
+                            {exitReason === 'LEFT' && (
+                                <div className="bg-white/5 py-1 px-4 rounded-full inline-block mb-4">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                                        {winnerUid === user.uid ? 'Opponent Left Match' : 'You Left Match'}
+                                    </p>
                                 </div>
                             )}
 
-                            {/* Versus Details */}
-                            <div className="flex items-center justify-between mb-10 px-4">
+                            {winnerUid === user.uid && selectedTier && (
+                                <div className="mt-4 bg-pink-500/10 border border-pink-500/20 rounded-2xl p-4 mb-8">
+                                    <p className="text-[10px] text-pink-500/70 font-bold uppercase mb-1">Winning Amount</p>
+                                    <p className="text-3xl font-black text-pink-400">₹{selectedTier.prize}</p>
+                                </div>
+                            )}
+                            <div className="flex items-center justify-between my-10 px-4">
                                 <div className="flex flex-col items-center gap-1">
                                     <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-12 h-12 rounded-full border-2 border-pink-500" />
                                     <span className="text-[10px] font-bold text-pink-400">YOU</span>
@@ -596,42 +677,83 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                                 </div>
                                 <div className="text-slate-700 font-black italic">VS</div>
                                 <div className="flex flex-col items-center gap-1">
-                                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${opponentName}`} className="w-12 h-12 rounded-full border-2 border-purple-500" />
+                                    <img src={opponentPic} className="w-12 h-12 rounded-full border-2 border-purple-500" />
                                     <span className="text-[10px] font-bold text-purple-400 uppercase">{opponentName.split(' ')[0]}</span>
-                                    <span className="text-xs font-bold text-slate-400">Battle Over</span>
+                                    <span className="text-xs font-bold text-slate-400">Match Over</span>
                                 </div>
                             </div>
-
                             <div className="flex flex-col gap-3">
-                                <button 
-                                    onClick={handlePlayAgain}
-                                    className="w-full py-4 bg-gradient-to-r from-pink-600 to-purple-600 text-white font-black rounded-2xl shadow-lg shadow-pink-900/40 transform active:scale-95 transition-all uppercase tracking-widest text-sm"
-                                >
-                                    Play Again (₹{selectedTier?.entry})
-                                </button>
-                                <button 
-                                    onClick={resetGame}
-                                    className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl border border-slate-700 hover:bg-slate-700 transition-all uppercase text-xs tracking-widest"
-                                >
-                                    Exit to Lobby
-                                </button>
+                                <button onClick={resetGame} className="w-full py-4 bg-gradient-to-r from-pink-600 to-purple-600 text-white font-black rounded-2xl shadow-lg shadow-pink-900/40 transform active:scale-95 transition-all uppercase tracking-widest text-sm">Play Again</button>
+                                <button onClick={onBack} className="w-full py-2 text-slate-500 font-bold text-xs uppercase tracking-widest hover:text-slate-300">Back to Menu</button>
                             </div>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Modals similar to TicTacToe */}
+            {showLeaveConfirm && (
+                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
+                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 rotate-12">
+                            <i className="fa-solid fa-power-off text-3xl"></i>
+                        </div>
+                        <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Stop Search?</h3>
+                        <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Matchmaking is currently active. Leaving will cancel your search.</p>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={() => cancelSearch()} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Yes, Exit</button>
+                            <button onClick={() => setShowLeaveConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Wait</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showGameExitConfirm && (
+                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
+                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 animate-pulse">
+                            <i className="fa-solid fa-right-from-bracket text-3xl"></i>
+                        </div>
+                        <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Quit Match?</h3>
+                        <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Quitting mid-game results in <span className="text-red-500 font-bold">LOSS</span> and opponent victory.</p>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={handleLeaveGame} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Confirm Quit</button>
+                            <button onClick={() => setShowGameExitConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Keep Playing</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showHistory && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold">Bingo History</h3><button onClick={() => setShowHistory(false)}><i className="fa-solid fa-xmark"></i></button></div>
-                        <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-                            {localHistory.length === 0 ? <p className="text-center text-slate-500 text-xs py-4">No recent bingo transactions</p> : 
+                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2rem] p-6 shadow-2xl flex flex-col max-h-[70vh] relative overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-0 left-0 w-full h-1 bg-pink-500"></div>
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="font-black text-xl italic uppercase tracking-tighter text-pink-500">Bingo History</h3>
+                            <button onClick={() => setShowHistory(false)} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar">
+                            {localHistory.length === 0 ? (
+                                <div className="text-center py-12 flex flex-col items-center gap-3">
+                                    <i className="fa-solid fa-ghost text-4xl text-slate-700"></i>
+                                    <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">No Bingo Yet</p>
+                                </div>
+                            ) : 
                             localHistory.map(h => (
-                                <div key={h.id} className="bg-slate-800 p-3 rounded-xl flex justify-between items-center">
-                                    <div><p className="text-xs font-bold text-slate-200">{h.details}</p><p className="text-[10px] text-slate-500">{new Date(h.date).toLocaleString()}</p></div>
-                                    <p className={`font-bold ${h.details?.includes("Win") ? 'text-green-500' : 'text-red-500'}`}>{h.details?.includes("Win") ? '+' : '-'}₹{h.amount}</p>
+                                <div key={h.id} className="bg-slate-800/50 border border-slate-800 p-4 rounded-2xl flex justify-between items-center hover:bg-slate-800 transition-colors">
+                                    <div className="flex gap-3 items-center">
+                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.details?.includes("Win") ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                            <i className={`fa-solid ${h.details?.includes("Win") ? 'fa-trophy' : 'fa-table-cells'}`}></i>
+                                        </div>
+                                        <div>
+                                            <p className="text-xs font-black text-slate-200 uppercase tracking-tight">{h.details}</p>
+                                            <p className="text-[10px] text-slate-500 font-bold">{new Date(h.date).toLocaleDateString()} • {new Date(h.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                        </div>
+                                    </div>
+                                    <p className={`font-black text-sm ${h.details?.includes("Win") ? 'text-green-400' : 'text-red-400'}`}>
+                                        {h.details?.includes("Win") ? '+' : '-'}₹{h.amount}
+                                    </p>
                                 </div>
                             ))}
                         </div>
@@ -640,16 +762,34 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
             )}
 
             {showHowTo && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold">How To Play Bingo</h3><button onClick={() => setShowHowTo(false)}><i className="fa-solid fa-xmark"></i></button></div>
-                        <div className="space-y-3 text-xs text-slate-400">
-                            <p>1. <strong className="text-white">Grid:</strong> You have a 5x5 grid with numbers 1-25. Symbols B-I-N-G-O represent your progress.</p>
-                            <p>2. <strong className="text-white">Gameplay:</strong> On your turn, pick a number. It gets marked on BOTH players' grids.</p>
-                            <p>3. <strong className="text-white">Winning:</strong> Complete 5 lines (Horizontal, Vertical, or Diagonal) to win. Each line lights up one letter of B-I-N-G-O.</p>
-                            <p>4. <strong className="text-white">Hearts:</strong> You have 3 Hearts. If your 15s timer runs out on your turn, you lose a heart. Lose all hearts = Defeat.</p>
+                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-0 left-0 w-full h-1 bg-pink-500"></div>
+                        <div className="flex justify-between items-center mb-8">
+                            <h3 className="font-black text-2xl italic uppercase tracking-tighter text-pink-500">How to Win</h3>
+                            <button onClick={() => setShowHowTo(false)} className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
                         </div>
-                        <button onClick={() => setShowHowTo(false)} className="w-full mt-6 bg-pink-600 py-3 rounded-xl font-bold text-sm">Got it!</button>
+                        <div className="space-y-6">
+                            <div className="flex gap-4 items-start">
+                                <div className="w-12 h-12 shrink-0 bg-pink-500/10 rounded-2xl flex items-center justify-center text-pink-500">
+                                    <i className="fa-solid fa-table-cells text-xl"></i>
+                                </div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Pick Wisely</h4><p className="text-slate-400 text-xs leading-relaxed">Numbers you pick are marked for BOTH players. Think before you strike!</p></div>
+                            </div>
+                            <div className="flex gap-4 items-start">
+                                <div className="w-12 h-12 shrink-0 bg-yellow-500/10 rounded-2xl flex items-center justify-center text-yellow-500">
+                                    <i className="fa-solid fa-lines-leaning text-xl"></i>
+                                </div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Make 5 Lines</h4><p className="text-slate-400 text-xs leading-relaxed">Complete 5 lines (Horizontal, Vertical or Diagonal) to shout B-I-N-G-O!</p></div>
+                            </div>
+                            <div className="flex gap-4 items-start">
+                                <div className="w-12 h-12 shrink-0 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500">
+                                    <i className="fa-solid fa-heart text-xl"></i>
+                                </div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Survival</h4><p className="text-slate-400 text-xs leading-relaxed">Don't miss your turns. Losing all hearts means instant game over!</p></div>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowHowTo(false)} className="w-full mt-10 bg-pink-600 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-pink-900/20 active:scale-95 transition-transform">Start Playing</button>
                     </div>
                 </div>
             )}

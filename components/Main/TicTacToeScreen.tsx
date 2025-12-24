@@ -1,11 +1,11 @@
-
 import React, { useState, useEffect, useRef } from "react";
 import { UserProfile, ToastType } from "../../types";
 import { update, ref, push, onValue, remove, get, set, runTransaction, query, limitToFirst, onDisconnect } from "firebase/database";
 import { db } from "../../firebase";
 import { updateSystemWallet } from "../../utils";
+import { ConfirmModal } from "../Shared/ConfirmModal";
 
-type GameState = 'lobby' | 'finding' | 'countdown' | 'playing' | 'result';
+type GameState = 'lobby' | 'finding' | 'search_timeout' | 'matched' | 'countdown' | 'playing' | 'result';
 type PlayerSymbol = 'X' | 'O';
 
 const TIERS = [
@@ -27,36 +27,42 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
     const [currentTurn, setCurrentTurn] = useState<PlayerSymbol>('X');
     const [gameId, setGameId] = useState<string | null>(null);
     const [opponentName, setOpponentName] = useState("Opponent");
+    const [opponentPic, setOpponentPic] = useState("");
     const [winner, setWinner] = useState<PlayerSymbol | 'Draw' | null>(null);
     const [roundWinner, setRoundWinner] = useState<PlayerSymbol | 'Draw' | null>(null);
     const [scores, setScores] = useState({ X: 0, O: 0 });
     const [hearts, setHearts] = useState({ X: 3, O: 3 });
+    const [exitReason, setExitReason] = useState<string | null>(null);
     
-    // Finding Page Animations
-    const [cyclingIndex, setCyclingIndex] = useState(0);
-
     // UI Helpers
     const [showHowTo, setShowHowTo] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [localHistory, setLocalHistory] = useState<any[]>([]);
+    const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+    const [showGameExitConfirm, setShowGameExitConfirm] = useState(false);
+    const [cyclingIndex, setCyclingIndex] = useState(0);
 
     // Timers
     const [countdown, setCountdown] = useState(3);
-    const [turnTimer, setTurnTimer] = useState(15);
     const [searchTimeLeft, setSearchTimeLeft] = useState(60);
+    const [timeoutCountdown, setTimeoutCountdown] = useState(3);
+    const [turnTimer, setTurnTimer] = useState(15);
 
     const matchRef = useRef<any>(null);
     const payoutProcessed = useRef(false);
+    const stateRef = useRef<GameState>('lobby');
+
+    useEffect(() => { stateRef.current = gameState; }, [gameState]);
 
     useEffect(() => {
         return () => {
-            if (gameState === 'finding' && selectedTier) {
+            if (stateRef.current === 'finding' || stateRef.current === 'matched') {
                 cancelSearch(true);
             }
         };
-    }, [gameState, selectedTier]);
+    }, []);
 
-    // Cycling avatars effect
+    // Finding Page Animations
     useEffect(() => {
         let interval: any;
         if (gameState === 'finding') {
@@ -67,27 +73,43 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         return () => clearInterval(interval);
     }, [gameState]);
 
-    // FIXED SEARCH TIMER
+    // Search Timer Logic
     useEffect(() => {
         let interval: any;
         if (gameState === 'finding') {
-            setSearchTimeLeft(60); // Reset when starting
+            setSearchTimeLeft(60);
             interval = setInterval(() => {
                 setSearchTimeLeft(prev => {
                     if (prev <= 1) {
                         clearInterval(interval);
-                        cancelSearch();
-                        showToast("No players found. Try again.", "info");
+                        setGameState('search_timeout');
+                        setTimeoutCountdown(3);
                         return 0;
                     }
                     return prev - 1;
                 });
             }, 1000);
         }
-        return () => { if(interval) clearInterval(interval); };
+        return () => clearInterval(interval);
     }, [gameState]);
 
-    const availableTiers = rounds === 1 ? TIERS : TIERS.filter(t => t.entry > 5);
+    // Search Timeout Auto-Redirect
+    useEffect(() => {
+        let interval: any;
+        if (gameState === 'search_timeout') {
+            interval = setInterval(() => {
+                setTimeoutCountdown(prev => {
+                    if (prev <= 1) {
+                        clearInterval(interval);
+                        cancelSearch(true);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => clearInterval(interval);
+    }, [gameState]);
 
     const handleJoinQueue = async (tier: { entry: number, prize: number }) => {
         const balance = (user.wallet.added || 0) + (user.wallet.winning || 0);
@@ -98,6 +120,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         }
 
         payoutProcessed.current = false;
+        setExitReason(null);
         setSelectedTier(tier);
         setGameState('finding');
 
@@ -184,30 +207,43 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
             }
         }
         setGameState('lobby');
+        setShowLeaveConfirm(false);
         if (!silent) showToast("Search Cancelled", "info");
     };
 
     const setupGame = async (gId: string, symbol: PlayerSymbol, oppNamePlaceholder: string) => {
         setGameId(gId);
         setMySymbol(symbol);
-        setGameState('countdown');
         setScores({ X: 0, O: 0 });
         setHearts({ X: 3, O: 3 });
         setWinner(null);
         setRoundWinner(null);
+        setGameState('matched');
         
         let attempts = 0;
         const fetchName = async () => {
             const gSnap = await get(ref(db, `ttt_games/${gId}/players`));
             if (gSnap.exists()) {
                 const p = gSnap.val();
-                setOpponentName(symbol === 'X' ? p.O.name : p.X.name);
+                const opName = symbol === 'X' ? p.O.name : p.X.name;
+                setOpponentName(opName);
+                setOpponentPic(`https://api.dicebear.com/7.x/avataaars/svg?seed=${opName}`);
             } else if(attempts < 3) {
                 attempts++;
                 setTimeout(fetchName, 500);
+            } else {
+                setOpponentName(oppNamePlaceholder);
+                setOpponentPic(`https://api.dicebear.com/7.x/avataaars/svg?seed=${oppNamePlaceholder}`);
             }
         };
         fetchName();
+
+        setTimeout(() => {
+            if(stateRef.current === 'matched') {
+                setGameState('countdown');
+                setCountdown(3);
+            }
+        }, 3000);
     };
 
     useEffect(() => {
@@ -257,7 +293,10 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                     setCurrentTurn(data.turn);
                     if (data.scores) setScores(data.scores);
                     if (data.hearts) setHearts(data.hearts);
-                    if (data.winner) handleMatchEnd(data.winner);
+                    if (data.winner) {
+                        if (data.exitReason) setExitReason(data.exitReason);
+                        handleMatchEnd(data.winner);
+                    }
                     else if (data.roundWinner) setRoundWinner(data.roundWinner);
                     else setRoundWinner(null);
                 }
@@ -294,6 +333,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         };
         if (nextHearts <= 0) {
             updates[`ttt_games/${gameId}/winner`] = mySymbol === 'X' ? 'O' : 'X';
+            updates[`ttt_games/${gameId}/exitReason`] = "TIMEOUT";
         }
         await update(ref(db), updates);
         showToast("Time Out! Heart Lost.", "error");
@@ -332,6 +372,16 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         await update(ref(db), updates);
     };
 
+    const handleLeaveGame = async () => {
+        if (!gameId || !mySymbol || winner) return;
+        const oppSymbol = mySymbol === 'X' ? 'O' : 'X';
+        await update(ref(db, `ttt_games/${gameId}`), {
+            winner: oppSymbol,
+            exitReason: "LEFT"
+        });
+        setShowGameExitConfirm(false);
+    };
+
     const checkWin = (b: any[]) => {
         const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
         for (let i=0; i<lines.length; i++) {
@@ -356,6 +406,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                 type: 'game', amount: prize, date: Date.now(), details: 'Tic Tac Toe Win', category: 'winning', closingBalance: newWinning + (user.wallet.added || 0)
             });
             await updateSystemWallet(-prize, "TTT Payout");
+            showToast("Victory!", "success");
         }
     };
 
@@ -369,25 +420,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         setGameId(null);
         setSelectedTier(null);
         payoutProcessed.current = false;
-    };
-
-    // PLAY AGAIN FLOW: Directly triggers handleJoinQueue with previous tier
-    const handlePlayAgain = () => {
-        const prevTier = selectedTier;
-        if (!prevTier) {
-            resetGame();
-            return;
-        }
-        // Partial reset of state for finding
-        setWinner(null);
-        setRoundWinner(null);
-        setScores({X:0, O:0});
-        setHearts({X:3, O:3});
-        setBoard(Array(9).fill(null));
-        setGameId(null);
-        payoutProcessed.current = false;
-        
-        handleJoinQueue(prevTier);
+        setShowLeaveConfirm(false);
+        setShowGameExitConfirm(false);
+        setExitReason(null);
     };
 
     const fetchHistory = async () => {
@@ -406,36 +441,46 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
 
     return (
         <div className="fixed inset-0 bg-slate-950 text-white flex flex-col font-sans z-[150]">
-            {/* BIG HEADER - Hidden during Finding */}
-            {gameState !== 'finding' && gameState !== 'result' && (
+            {/* Header logic adjusted for finding screen requirement */}
+            {(gameState === 'lobby' || gameState === 'finding' || gameState === 'search_timeout') && (
                 <div className="bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800 pb-6 pt-4 px-6 shadow-xl relative overflow-hidden shrink-0">
                     <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
                     <div className="flex items-start justify-between relative z-10">
-                        <button onClick={onBack} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center hover:bg-slate-700 transition">
-                            <i className="fa-solid fa-arrow-left text-slate-400"></i>
-                        </button>
-                        
+                        {gameState === 'lobby' ? (
+                            <button onClick={onBack} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center hover:bg-slate-700 transition">
+                                <i className="fa-solid fa-arrow-left text-slate-400"></i>
+                            </button>
+                        ) : (
+                            <button onClick={() => setShowLeaveConfirm(true)} className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 hover:bg-red-500/20 transition active:scale-95">
+                                <i className="fa-solid fa-right-from-bracket"></i>
+                            </button>
+                        )}
                         <div className="flex items-center gap-3">
+                            {latency !== null && (
+                                <div className="flex items-center gap-1 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-800 text-[10px] font-bold text-slate-400">
+                                    <i className="fa-solid fa-signal text-green-500"></i> {latency}ms
+                                </div>
+                            )}
                             <button onClick={fetchHistory} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400"><i className="fa-solid fa-clock-rotate-left"></i></button>
                             <button onClick={() => setShowHowTo(true)} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400"><i className="fa-solid fa-circle-info"></i></button>
                         </div>
                     </div>
-                    
-                    <div className="mt-6 flex items-center gap-4">
-                        <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 rotate-3">
-                            <i className="fa-solid fa-xmarks-lines text-3xl text-white"></i>
+                    {gameState === 'lobby' && (
+                        <div className="mt-6 flex items-center gap-4 animate-[fade-enter_0.3s]">
+                            <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 rotate-3">
+                                <i className="fa-solid fa-xmarks-lines text-3xl text-white"></i>
+                            </div>
+                            <div>
+                                <h1 className="text-2xl font-extrabold tracking-tight text-white">Tic Tac Toe</h1>
+                                <p className="text-xs text-blue-300 font-medium bg-blue-900/30 px-2 py-0.5 rounded-lg w-fit mt-1">Real-Time Multiplayer</p>
+                            </div>
                         </div>
-                        <div>
-                            <h1 className="text-2xl font-extrabold tracking-tight text-white">Tic Tac Toe</h1>
-                            <p className="text-xs text-blue-300 font-medium bg-blue-900/30 px-2 py-0.5 rounded-lg w-fit mt-1">Real-Time Multiplayer</p>
-                        </div>
-                    </div>
+                    )}
                 </div>
             )}
 
-            {/* CONTENT */}
             {gameState === 'lobby' && (
-                <div className="flex-1 p-5 overflow-y-auto">
+                <div className="flex-1 p-5 overflow-y-auto animate-[fade-enter_0.3s]">
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <i className="fa-solid fa-trophy text-yellow-500"></i>
@@ -447,9 +492,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                             ))}
                         </div>
                     </div>
-                    
                     <div className="grid grid-cols-1 gap-4">
-                        {availableTiers.map((tier, idx) => (
+                        {/* Corrected: Use TIERS instead of non-existent availableTiers */}
+                        {TIERS.map((tier, idx) => (
                             <div key={idx} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-lg relative overflow-hidden group hover:border-blue-500/50 transition-all duration-300">
                                 <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-slate-800 via-transparent to-transparent opacity-50"></div>
                                 <div className="flex items-center justify-between relative z-10">
@@ -466,22 +511,16 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
             )}
 
             {gameState === 'finding' && (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden">
+                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden animate-[fade-enter_0.3s]">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-900/20 via-slate-950 to-slate-950"></div>
                     
-                    {/* Top Timer */}
-                    <div className="relative z-10 mb-12 flex flex-col items-center">
+                    <div className="relative z-10 mb-12">
                         <div className="w-24 h-24 rounded-full border-4 border-slate-800 flex items-center justify-center relative">
                             <div className="absolute inset-0 border-4 border-blue-500 rounded-full border-t-transparent animate-spin"></div>
                             <span className="text-3xl font-black text-white">{searchTimeLeft}</span>
                         </div>
-                        <div className="mt-4 flex items-center gap-2 bg-slate-900/50 px-3 py-1 rounded-full border border-white/5 backdrop-blur-sm">
-                            <div className={`w-2 h-2 rounded-full ${latency ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></div>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{latency ? `Connection: Stable (${latency}ms)` : 'Connecting...'}</span>
-                        </div>
                     </div>
 
-                    {/* VS Section */}
                     <div className="flex items-center gap-6 relative z-10 mb-16">
                         <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out]">
                             <div className="relative">
@@ -489,7 +528,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                     <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
                                 </div>
                                 <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg rotate-12">
-                                    <i className="fa-solid fa-xmark text-white text-xl"></i>
+                                    <span className="text-white text-xl font-black">X</span>
                                 </div>
                             </div>
                             <span className="text-xs font-bold text-blue-400">YOU</span>
@@ -501,35 +540,79 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
 
                         <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out_0.1s]">
                             <div className="relative">
-                                <div className="w-28 h-28 rounded-full border-4 border-slate-800 p-1 overflow-hidden bg-slate-800">
+                                <div className="w-28 h-28 rounded-full border-4 border-slate-800 p-1 overflow-hidden bg-slate-800 shadow-inner">
                                     <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${RANDOM_NAMES[cyclingIndex]}`} className="w-full h-full rounded-full object-cover transition-opacity duration-150" />
                                 </div>
                                 <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg -rotate-12">
-                                    <i className="fa-solid fa-circle text-white text-[10px]"></i>
+                                    <span className="text-white text-xl font-black">O</span>
                                 </div>
                             </div>
                             <span className="text-xs font-bold text-slate-500 animate-pulse uppercase">Searching</span>
                         </div>
                     </div>
-                    
                     <h3 className="text-lg font-bold text-white mb-8 animate-pulse relative z-10 tracking-widest uppercase">Finding Match...</h3>
+                </div>
+            )}
 
-                    <button onClick={() => cancelSearch()} className="px-10 py-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-red-500 font-black text-xs uppercase tracking-widest hover:bg-red-500/10 active:scale-95 transition-all z-10 shadow-xl">
-                        Cancel Search
-                    </button>
+            {gameState === 'search_timeout' && (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden">
+                    <div className="absolute inset-0 bg-red-600/5 animate-pulse"></div>
+                    <div className="relative z-10 text-center">
+                        <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6 text-red-500 border border-red-500/30">
+                            <i className="fa-solid fa-user-slash text-4xl"></i>
+                        </div>
+                        <h2 className="text-2xl font-black text-white uppercase italic mb-2 tracking-tight">No Player Found</h2>
+                        <p className="text-slate-400 text-sm mb-12 max-w-xs mx-auto">We couldn't find an opponent for this entry tier right now.</p>
+                        
+                        <div className="flex flex-col items-center">
+                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-4">Returning to Table</p>
+                            <div className="text-6xl font-black text-white tabular-nums animate-bounce">
+                                {timeoutCountdown}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {gameState === 'matched' && (
+                <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 p-8 relative overflow-hidden animate-[fade-enter_0.3s]">
+                     <div className="absolute inset-0 bg-blue-600/10 opacity-30 animate-pulse"></div>
+                     <div className="text-[60px] font-black text-white italic tracking-tighter animate-[bounce_0.5s_infinite] drop-shadow-lg mb-12">
+                        BATTLE START!
+                     </div>
+                     <div className="flex items-center gap-12 relative z-10">
+                        <div className="flex flex-col items-center gap-3 animate-[slide-down_0.5s_ease-out]">
+                            <div className="w-32 h-32 rounded-full border-4 border-blue-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(59,130,246,0.5)]">
+                                <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
+                            </div>
+                            <span className="text-sm font-black text-blue-400 uppercase tracking-widest">{user.username}</span>
+                        </div>
+                        <div className="text-4xl font-black text-slate-700 italic">VS</div>
+                        <div className="flex flex-col items-center gap-3 animate-[slide-up_0.5s_ease-out]">
+                            <div className="w-32 h-32 rounded-full border-4 border-red-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(239,68,68,0.5)]">
+                                <img src={opponentPic} className="w-full h-full rounded-full object-cover" />
+                            </div>
+                            <span className="text-sm font-black text-red-400 uppercase tracking-widest">{opponentName}</span>
+                        </div>
+                     </div>
                 </div>
             )}
 
             {gameState === 'countdown' && (
-                <div className="flex-1 flex flex-col items-center justify-center bg-slate-900 relative">
+                <div className="flex-1 flex flex-col items-center justify-center bg-slate-900 relative animate-[fade-enter_0.3s]">
                     <div className="text-[150px] font-black text-transparent bg-clip-text bg-gradient-to-b from-blue-400 to-blue-600 animate-[bounce_1s_infinite]">{countdown > 0 ? countdown : "GO!"}</div>
-                    <p className="text-slate-400 font-bold mt-4 uppercase tracking-widest">Match Found</p>
+                    <p className="text-slate-400 font-bold mt-4 uppercase tracking-widest">Match Ready</p>
                 </div>
             )}
 
             {gameState === 'playing' && (
-                <div className="flex-1 flex flex-col p-4 relative overflow-y-auto">
-                    <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur-md p-4 rounded-2xl mb-4 border border-slate-800 shadow-xl">
+                <div className="flex-1 flex flex-col p-4 relative overflow-y-auto animate-[fade-enter_0.3s]">
+                    <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur-md p-4 rounded-2xl mb-4 border border-slate-800 shadow-xl relative">
+                        {/* Leave Button */}
+                        <button onClick={() => setShowGameExitConfirm(true)} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg hover:scale-110 active:scale-95 transition-transform z-30">
+                            <i className="fa-solid fa-right-from-bracket text-xs"></i>
+                        </button>
+
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn === mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
                             <div className="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center text-blue-400 font-black text-2xl mb-1 shadow-inner border border-blue-500/30 relative">
                                 {mySymbol}
@@ -540,14 +623,12 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                     <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= (hearts[mySymbol!] || 0) ? 'text-red-500' : 'text-slate-700'}`}></i>
                                 ))}
                             </div>
-                            <span className="text-[10px] font-bold text-slate-300 uppercase">You</span>
+                            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-tighter">YOU</span>
                         </div>
-                        
                         <div className="flex flex-col items-center">
                             <span className={`text-3xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>{turnTimer}</span>
                             <span className="text-[8px] text-slate-500 uppercase font-bold tracking-wider">SEC</span>
                         </div>
-
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn !== mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
                             <div className="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-black text-2xl mb-1 shadow-inner border border-red-500/30 relative">
                                 {mySymbol === 'X' ? 'O' : 'X'}
@@ -558,10 +639,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                     <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= (hearts[mySymbol === 'X' ? 'O' : 'X'] || 0) ? 'text-red-500' : 'text-slate-700'}`}></i>
                                 ))}
                             </div>
-                            <span className="text-[10px] font-bold text-slate-300 truncate w-16 text-center uppercase">{opponentName.split(' ')[0]}</span>
+                            <span className="text-[10px] font-bold text-slate-300 truncate w-16 text-center uppercase tracking-tighter">{opponentName.split(' ')[0]}</span>
                         </div>
                     </div>
-
                     <div className="grid grid-cols-3 gap-3 aspect-square w-full max-w-sm mx-auto relative mb-4">
                         {roundWinner && !winner && (
                             <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 backdrop-blur-sm rounded-2xl animate-[fade-enter_0.2s]">
@@ -582,80 +662,109 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                 </div>
             )}
 
-            {/* DEDICATED RESULT PAGE */}
-            {gameState === 'result' && winner && (
-                <div className="flex-1 flex flex-col items-center justify-center p-6 bg-slate-950 animate-[fade-enter_0.3s]">
-                    <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 text-center shadow-2xl relative overflow-hidden">
-                        <div className={`absolute top-0 left-0 w-full h-2 ${winner === mySymbol ? 'bg-green-500' : winner === 'Draw' ? 'bg-slate-500' : 'bg-red-500'}`}></div>
+            {gameState === 'result' && (
+                <div className="fixed inset-0 z-[200] bg-slate-950 flex flex-col items-center justify-center p-6 animate-[fade-enter_0.3s]">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
+                        <div className={`absolute top-0 left-0 w-full h-2 bg-gradient-to-r ${winner === mySymbol ? 'from-green-400 to-emerald-500' : winner === 'Draw' ? 'from-slate-400 to-slate-500' : 'from-red-400 to-red-600'}`}></div>
+                        <div className="text-7xl mb-6 transform scale-125 animate-bounce">{winner === mySymbol ? '🏆' : winner === 'Draw' ? '🤝' : '💀'}</div>
+                        <h2 className={`text-4xl font-black mb-1 uppercase italic tracking-tighter ${winner === mySymbol ? 'text-green-500' : winner === 'Draw' ? 'text-slate-200' : 'text-red-500'}`}>{winner === mySymbol ? 'VICTORY' : winner === 'Draw' ? 'DRAW' : 'DEFEAT'}</h2>
                         
-                        <div className="relative z-10">
-                            <div className="text-7xl mb-6 transform scale-125 animate-bounce">
-                                {winner === mySymbol ? '🏆' : winner === 'Draw' ? '🤝' : '💀'}
+                        {exitReason === 'LEFT' && (
+                            <div className="bg-white/5 py-1 px-4 rounded-full inline-block mb-4">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                                    {winner === mySymbol ? 'Opponent Left Match' : 'You Left Match'}
+                                </p>
                             </div>
+                        )}
 
-                            <h2 className={`text-4xl font-black mb-1 uppercase tracking-tighter italic ${winner === mySymbol ? 'text-green-500' : winner === 'Draw' ? 'text-slate-300' : 'text-red-500'}`}>
-                                {winner === mySymbol ? 'VICTORY' : winner === 'Draw' ? 'MATCH DRAW' : 'DEFEAT'}
-                            </h2>
-                            
-                            <div className="flex items-center justify-center gap-2 mb-8">
-                                <div className="h-[1px] bg-slate-800 flex-1"></div>
-                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Match Result</span>
-                                <div className="h-[1px] bg-slate-800 flex-1"></div>
+                        {winner === mySymbol && selectedTier && (
+                             <div className="mt-2 bg-green-500/10 border border-green-500/20 rounded-xl p-3 inline-block">
+                                 <p className="text-[10px] text-green-400 font-bold uppercase tracking-widest mb-1">Prize Won</p>
+                                 <p className="text-2xl font-black text-green-400">₹{selectedTier.prize}</p>
+                             </div>
+                        )}
+                        <div className="flex justify-center gap-8 my-8 border-y border-slate-800 py-4">
+                            <div className="text-center">
+                                <p className="text-[10px] text-slate-500 uppercase font-bold">You</p>
+                                <p className="text-2xl font-black text-white">{scores[mySymbol!]}</p>
                             </div>
-
-                            {/* Prize section */}
-                            {winner === mySymbol && selectedTier && (
-                                <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-4 mb-8">
-                                    <p className="text-[10px] text-green-500/70 font-bold uppercase mb-1">Total Winnings</p>
-                                    <p className="text-3xl font-black text-green-400">₹{selectedTier.prize}</p>
-                                </div>
-                            )}
-
-                            {/* Versus Details */}
-                            <div className="flex items-center justify-between mb-10 px-4">
-                                <div className="flex flex-col items-center gap-1">
-                                    <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-12 h-12 rounded-full border-2 border-blue-500" />
-                                    <span className="text-[10px] font-bold text-blue-400">YOU</span>
-                                    <span className="text-xl font-black">{scores[mySymbol || 'X']}</span>
-                                </div>
-                                <div className="text-slate-700 font-black italic">VS</div>
-                                <div className="flex flex-col items-center gap-1">
-                                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${opponentName}`} className="w-12 h-12 rounded-full border-2 border-red-500" />
-                                    <span className="text-[10px] font-bold text-red-400 uppercase">{opponentName.split(' ')[0]}</span>
-                                    <span className="text-xl font-black">{scores[mySymbol === 'X' ? 'O' : 'X']}</span>
-                                </div>
+                            <div className="text-center">
+                                <p className="text-[10px] text-slate-500 uppercase font-bold">Opp</p>
+                                <p className="text-2xl font-black text-white">{scores[mySymbol === 'X' ? 'O' : 'X']}</p>
                             </div>
-
-                            <div className="flex flex-col gap-3">
-                                <button 
-                                    onClick={handlePlayAgain}
-                                    className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black rounded-2xl shadow-lg shadow-blue-900/40 transform active:scale-95 transition-all uppercase tracking-widest text-sm"
-                                >
-                                    Play Again (₹{selectedTier?.entry})
-                                </button>
-                                <button 
-                                    onClick={resetGame}
-                                    className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl border border-slate-700 hover:bg-slate-700 transition-all uppercase text-xs tracking-widest"
-                                >
-                                    Back to Lobby
-                                </button>
-                            </div>
+                        </div>
+                        <p className="text-slate-400 font-medium mb-8 text-sm">{winner === mySymbol ? "Awesome skills! Money added to winnings." : winner === 'Draw' ? "Tough battle! Fee refunded." : "Don't give up! Try again."}</p>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={resetGame} className="w-full py-4 bg-white text-slate-900 font-black rounded-2xl hover:bg-slate-200 transition shadow-lg text-sm uppercase tracking-wider">Play Again</button>
+                            <button onClick={onBack} className="w-full py-2 text-slate-500 font-bold text-xs uppercase tracking-widest hover:text-slate-300">Exit to Menu</button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* History Modal */}
+            {showLeaveConfirm && (
+                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6 animate-[fade-enter_0.2s]">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl overflow-hidden relative">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
+                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 rotate-12">
+                            <i className="fa-solid fa-triangle-exclamation text-3xl"></i>
+                        </div>
+                        <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Stop Search?</h3>
+                        <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Finding the best opponent takes time. Leaving now will cancel your queue.</p>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={() => cancelSearch()} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Yes, Cancel</button>
+                            <button onClick={() => setShowLeaveConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">No, Continue</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showGameExitConfirm && (
+                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
+                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 animate-pulse">
+                            <i className="fa-solid fa-door-open text-3xl"></i>
+                        </div>
+                        <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Leave Game?</h3>
+                        <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Exiting will result in an <span className="text-red-500 font-bold">INSTANT DEFEAT</span> and loss of entry fee.</p>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={handleLeaveGame} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Leave & Forfeit</button>
+                            <button onClick={() => setShowGameExitConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Return to Game</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showHistory && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold">Game History</h3><button onClick={() => setShowHistory(false)}><i className="fa-solid fa-xmark"></i></button></div>
-                        <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-                            {localHistory.length === 0 ? <p className="text-center text-slate-500 text-xs py-4">No recent game transactions</p> : 
+                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2rem] p-6 shadow-2xl flex flex-col max-h-[70vh] relative overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-0 left-0 w-full h-1 bg-blue-600"></div>
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="font-black text-xl italic uppercase tracking-tighter text-blue-400">Match History</h3>
+                            <button onClick={() => setShowHistory(false)} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar">
+                            {localHistory.length === 0 ? (
+                                <div className="text-center py-12 flex flex-col items-center gap-3">
+                                    <i className="fa-solid fa-ghost text-4xl text-slate-700"></i>
+                                    <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">No Matches Yet</p>
+                                </div>
+                            ) : 
                             localHistory.map(h => (
-                                <div key={h.id} className="bg-slate-800 p-3 rounded-xl flex justify-between items-center">
-                                    <div><p className="text-xs font-bold text-slate-200">{h.details}</p><p className="text-[10px] text-slate-500">{new Date(h.date).toLocaleString()}</p></div>
-                                    <p className={`font-bold ${h.details?.includes("Win") ? 'text-green-500' : 'text-red-500'}`}>{h.details?.includes("Win") ? '+' : '-'}₹{h.amount}</p>
+                                <div key={h.id} className="bg-slate-800/50 border border-slate-800 p-4 rounded-2xl flex justify-between items-center hover:bg-slate-800 transition-colors">
+                                    <div className="flex gap-3 items-center">
+                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.details?.includes("Win") ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                            <i className={`fa-solid ${h.details?.includes("Win") ? 'fa-trophy' : 'fa-gamepad'}`}></i>
+                                        </div>
+                                        <div>
+                                            <p className="text-xs font-black text-slate-200 uppercase tracking-tight">{h.details}</p>
+                                            <p className="text-[10px] text-slate-500 font-bold">{new Date(h.date).toLocaleDateString()} • {new Date(h.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                        </div>
+                                    </div>
+                                    <p className={`font-black text-sm ${h.details?.includes("Win") ? 'text-green-400' : 'text-red-400'}`}>
+                                        {h.details?.includes("Win") ? '+' : '-'}₹{h.amount}
+                                    </p>
                                 </div>
                             ))}
                         </div>
@@ -663,18 +772,29 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                 </div>
             )}
 
-            {/* How To Play Modal */}
             {showHowTo && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold">How To Play</h3><button onClick={() => setShowHowTo(false)}><i className="fa-solid fa-xmark"></i></button></div>
-                        <div className="space-y-3 text-xs text-slate-400">
-                            <p>1. <strong className="text-white">Goal:</strong> Align 3 symbols (X or O) in a row, column, or diagonal.</p>
-                            <p>2. <strong className="text-white">Hearts:</strong> You have 3 Hearts. If your turn timer (15s) runs out, you lose a heart. Lose all hearts = Auto Defeat.</p>
-                            <p>3. <strong className="text-white">Rounds:</strong> In multi-round matches, you must win the majority to claim the prize.</p>
-                            <p>4. <strong className="text-white">Payout:</strong> Winners get the prize instantly. Draw matches result in a refund.</p>
+                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-0 left-0 w-full h-1 bg-yellow-500"></div>
+                        <div className="flex justify-between items-center mb-8">
+                            <h3 className="font-black text-2xl italic uppercase tracking-tighter text-yellow-500">Battle Manual</h3>
+                            <button onClick={() => setShowHowTo(false)} className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
                         </div>
-                        <button onClick={() => setShowHowTo(false)} className="w-full mt-6 bg-blue-600 py-3 rounded-xl font-bold text-sm">Got it!</button>
+                        <div className="space-y-6">
+                            <div className="flex gap-4 items-start">
+                                <div className="w-10 h-10 shrink-0 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 font-black">01</div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Victory Path</h4><p className="text-slate-400 text-xs leading-relaxed">Connect 3 symbols (X or O) vertically, horizontally or diagonally to win a round.</p></div>
+                            </div>
+                            <div className="flex gap-4 items-start">
+                                <div className="w-10 h-10 shrink-0 bg-red-500/10 rounded-xl flex items-center justify-center text-red-500 font-black">02</div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Heart System</h4><p className="text-slate-400 text-xs leading-relaxed">You have 3 Hearts. Each turn timeout (15s) consumes 1 Heart. Lose all = Defeat!</p></div>
+                            </div>
+                            <div className="flex gap-4 items-start">
+                                <div className="w-10 h-10 shrink-0 bg-purple-500/10 rounded-xl flex items-center justify-center text-purple-500 font-black">03</div>
+                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Match Rounds</h4><p className="text-slate-400 text-xs leading-relaxed">Winner is decided by 'Best of N' logic. Reach target wins first to claim the cash prize.</p></div>
+                            </div>
+                        </div>
+                        <button onClick={() => setShowHowTo(false)} className="w-full mt-10 bg-yellow-500 text-black py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-yellow-500/20 active:scale-95 transition-transform">Get Ready</button>
                     </div>
                 </div>
             )}
