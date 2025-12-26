@@ -7,6 +7,11 @@ import { updateSystemWallet } from "../../utils";
 
 type GameState = 'lobby' | 'finding' | 'search_timeout' | 'matched' | 'countdown' | 'playing' | 'result';
 
+interface BingoCall {
+    num: number;
+    uid: string;
+}
+
 const TIERS = [
     { entry: 5, prize: 9 },
     { entry: 10, prize: 18 },
@@ -23,12 +28,15 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
     const [gameId, setGameId] = useState<string | null>(null);
     const [opponentName, setOpponentName] = useState("Opponent");
     const [opponentPic, setOpponentPic] = useState("");
+    const [opponentUid, setOpponentUid] = useState<string | null>(null);
     const [isMyTurn, setIsMyTurn] = useState(false);
     
     // Game Data
     const [board, setBoard] = useState<number[]>([]);
     const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
+    const [calls, setCalls] = useState<BingoCall[]>([]);
     const [linesCompleted, setLinesCompleted] = useState(0);
+    const [oppLinesCompleted, setOppLinesCompleted] = useState(0);
     const [winnerUid, setWinnerUid] = useState<string | null>(null);
     const [lastCalledNumber, setLastCalledNumber] = useState<number | null>(null);
     const [hearts, setHearts] = useState({ host: 3, joiner: 3 });
@@ -159,7 +167,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                             createdAt: Date.now()
                         };
                         await set(ref(db, `bingo_games/${newGameId}`), gameData);
-                        setupGame(newGameId, opponent.name);
+                        setupGame(newGameId, opponent.name, oppUid);
                         break;
                     }
                 }
@@ -183,7 +191,8 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
             if (data.matchId) {
                 onDisconnect(myRef).cancel();
                 remove(myRef);
-                setupGame(data.matchId, "Opponent");
+                const oppId = data.matchId.split('_')[0];
+                setupGame(data.matchId, "Opponent", oppId);
             }
         });
         matchRef.current = listener;
@@ -205,13 +214,16 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         if (!silent) showToast("Search Cancelled", "info");
     };
 
-    const setupGame = (gId: string, placeholderName: string) => {
+    const setupGame = (gId: string, placeholderName: string, oppId: string) => {
         setGameId(gId);
         setBoard(generateBoard());
         setMarkedNumbers([]);
+        setCalls([]);
         setLinesCompleted(0);
+        setOppLinesCompleted(0);
         setWinnerUid(null);
         setHearts({ host: 3, joiner: 3 });
+        setOpponentUid(oppId);
         setGameState('matched');
         
         let attempts = 0;
@@ -221,7 +233,9 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 const val = snap.val();
                 const isHost = val.players.host.uid === user.uid;
                 const opName = isHost ? val.players.joiner.name : val.players.host.name;
+                const opUid = isHost ? val.players.joiner.uid : val.players.host.uid;
                 setOpponentName(opName);
+                setOpponentUid(opUid);
                 setOpponentPic(`https://api.dicebear.com/7.x/avataaars/svg?seed=${opName}`);
                 setIsMyTurn(val.turn === user.uid);
             } else if (attempts < 3) {
@@ -290,9 +304,19 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 const data = snap.val();
                 if (data) {
                     if (data.calls) {
-                        const callsArray = Object.values(data.calls) as number[];
-                        setMarkedNumbers(callsArray);
-                        setLastCalledNumber(callsArray[callsArray.length - 1]);
+                        const callsArray = Object.values(data.calls) as BingoCall[];
+                        setCalls(callsArray);
+                        const nums = callsArray.map(c => c.num);
+                        setMarkedNumbers(nums);
+                        setLastCalledNumber(nums[nums.length - 1]);
+                        
+                        // Opponent Score Tracking
+                        // To show opponent score correctly, we simulate their potential board? 
+                        // In 1v1 Bingo, usually you see your lines. We'll show their line count 
+                        // if we want to be competitive, but usually opponent board is hidden.
+                        // For SM EARN competitive feel, we'll assume opponent board is similarly 1-25.
+                        // Realistically we can't know their board without storing it.
+                        // Let's add board storage to sync scores.
                     }
                     if (data.hearts) setHearts(data.hearts);
                     setIsMyTurn(data.turn === user.uid);
@@ -306,12 +330,19 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         }
     }, [gameState, gameId]);
 
+    // Local Win Detection
     useEffect(() => {
         if (gameState === 'playing' && markedNumbers.length >= 5) {
             const lines = checkLines(board, markedNumbers);
             setLinesCompleted(lines);
-            if (lines >= 5 && !winnerUid) {
-                update(ref(db, `bingo_games/${gameId}`), { winner: user.uid });
+            
+            // Only declaring winner if it's NOT already declared
+            // AND only if I have 5 lines.
+            // Problem 1 Fix: The person WHO PICKED the number should declare victory 
+            // if they hit 5 lines. The opponent will see it via the DB update.
+            if (lines >= 5 && !winnerUid && isMyTurn === false) {
+                 // I reached bingo from an opponent's pick.
+                 // We'll let the caller's logic handle the state update to avoid race conditions.
             }
         }
     }, [markedNumbers, board, gameState]);
@@ -356,12 +387,27 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
 
     const handleNumberClick = async (num: number) => {
         if (!isMyTurn || markedNumbers.includes(num) || winnerUid) return;
+        
         const snap = await get(ref(db, `bingo_games/${gameId}/players`));
         if(!snap.exists()) return;
         const p = snap.val();
         const nextTurn = p.host.uid === user.uid ? p.joiner.uid : p.host.uid;
-        await push(ref(db, `bingo_games/${gameId}/calls`), num);
-        await update(ref(db, `bingo_games/${gameId}`), { turn: nextTurn });
+
+        // Check if I win AFTER picking this number
+        const newMarked = [...markedNumbers, num];
+        const newLines = checkLines(board, newMarked);
+        
+        const updates: any = {};
+        const callRef = push(ref(db, `bingo_games/${gameId}/calls`));
+        updates[`bingo_games/${gameId}/calls/${callRef.key}`] = { num, uid: user.uid };
+        updates[`bingo_games/${gameId}/turn`] = nextTurn;
+
+        if (newLines >= 5) {
+            // I WIN! Fixed Problem 1: Priority to the active caller.
+            updates[`bingo_games/${gameId}/winner`] = user.uid;
+        }
+
+        await update(ref(db), updates);
     };
 
     const handleLeaveGame = async () => {
@@ -380,12 +426,17 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
 
     const checkLines = (grid: number[], marked: number[]) => {
         let count = 0;
+        // Rows
         for(let i=0; i<5; i++) {
             let rowFull = true; for(let j=0; j<5; j++) if(!marked.includes(grid[i*5 + j])) rowFull = false;
             if(rowFull) count++;
+        }
+        // Cols
+        for(let i=0; i<5; i++) {
             let colFull = true; for(let j=0; j<5; j++) if(!marked.includes(grid[j*5 + i])) colFull = false;
             if(colFull) count++;
         }
+        // Diagonals
         let d1 = true; for(let i=0; i<5; i++) if(!marked.includes(grid[i*5+i])) d1 = false;
         if(d1) count++;
         let d2 = true; for(let i=0; i<5; i++) if(!marked.includes(grid[i*5 + (4-i)])) d2 = false;
@@ -436,12 +487,12 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
         }
     };
 
-    const myHearts = opponentName === "Opponent" ? 3 : (gameId && hearts ? (hearts as any)[user.uid === gameId.split('_')[0] ? 'host' : 'joiner'] : 3);
-    const oppHearts = opponentName === "Opponent" ? 3 : (gameId && hearts ? (hearts as any)[user.uid === gameId.split('_')[0] ? 'joiner' : 'host'] : 3);
+    const myHearts = gameId && hearts ? (hearts as any)[user.uid === gameId.split('_')[0] ? 'host' : 'joiner'] : 3;
+    const oppHearts = gameId && hearts ? (hearts as any)[user.uid === gameId.split('_')[0] ? 'joiner' : 'host'] : 3;
 
     return (
         <div className="fixed inset-0 bg-slate-950 text-white flex flex-col font-sans z-[150]">
-            {/* Header logic adjusted for finding screen requirement */}
+            {/* Beast Header */}
             {(gameState === 'lobby' || gameState === 'finding' || gameState === 'search_timeout') && (
                 <div className="bg-gradient-to-b from-purple-900 to-slate-950 border-b border-purple-900/50 pb-6 pt-4 px-6 shadow-xl relative overflow-hidden shrink-0">
                     <div className="absolute top-0 right-0 w-40 h-40 bg-pink-600/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
@@ -479,6 +530,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 </div>
             )}
 
+            {/* LOBBY */}
             {gameState === 'lobby' && (
                 <div className="flex-1 p-5 overflow-y-auto animate-[fade-enter_0.3s]">
                     <div className="flex items-center gap-2 mb-4">
@@ -503,6 +555,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 </div>
             )}
 
+            {/* FINDING OPPONENT */}
             {gameState === 'finding' && (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden animate-[fade-enter_0.3s]">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-purple-900/20 via-slate-950 to-slate-950"></div>
@@ -547,26 +600,7 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 </div>
             )}
 
-            {gameState === 'search_timeout' && (
-                <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden">
-                    <div className="absolute inset-0 bg-red-600/5 animate-pulse"></div>
-                    <div className="relative z-10 text-center">
-                        <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6 text-red-500 border border-red-500/30">
-                            <i className="fa-solid fa-user-clock text-4xl"></i>
-                        </div>
-                        <h2 className="text-2xl font-black text-white uppercase italic mb-2 tracking-tight">No Player Found</h2>
-                        <p className="text-slate-400 text-sm mb-12 max-w-xs mx-auto">Currently there are no opponents in this table. Please try another tier or wait.</p>
-                        
-                        <div className="flex flex-col items-center">
-                            <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-4">Returning to Lobby</p>
-                            <div className="text-6xl font-black text-white tabular-nums animate-bounce">
-                                {timeoutCountdown}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
+            {/* BATTLE START SPLASH */}
             {gameState === 'matched' && (
                 <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 p-8 relative overflow-hidden animate-[fade-enter_0.3s]">
                      <div className="absolute inset-0 bg-pink-600/10 opacity-30 animate-pulse"></div>
@@ -578,14 +612,14 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                             <div className="w-32 h-32 rounded-full border-4 border-pink-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(236,72,153,0.5)]">
                                 <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
                             </div>
-                            <span className="text-sm font-black text-pink-400 uppercase tracking-widest">{user.username}</span>
+                            <span className="text-sm font-black text-pink-400 uppercase tracking-widest truncate max-w-[120px]">{user.username}</span>
                         </div>
                         <div className="text-4xl font-black text-slate-700 italic">VS</div>
                         <div className="flex flex-col items-center gap-3 animate-[slide-up_0.5s_ease-out]">
                             <div className="w-32 h-32 rounded-full border-4 border-purple-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(168,85,247,0.5)]">
                                 <img src={opponentPic} className="w-full h-full rounded-full object-cover" />
                             </div>
-                            <span className="text-sm font-black text-purple-400 uppercase tracking-widest">{opponentName}</span>
+                            <span className="text-sm font-black text-purple-400 uppercase tracking-widest truncate max-w-[120px]">{opponentName}</span>
                         </div>
                      </div>
                 </div>
@@ -598,59 +632,95 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
             )}
 
             {gameState === 'playing' && (
-                <div className="flex-1 flex flex-col p-4 max-w-md mx-auto w-full overflow-y-auto animate-[fade-enter_0.3s]">
-                    <div className="flex justify-between items-center mb-6 bg-slate-900/50 p-3 rounded-2xl border border-slate-800 relative">
-                        {/* Leave Button */}
-                        <button onClick={() => setShowGameExitConfirm(true)} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg hover:scale-110 active:scale-95 transition-transform z-30">
-                            <i className="fa-solid fa-right-from-bracket text-xs"></i>
+                <div className="flex-1 flex flex-col relative overflow-hidden animate-[fade-enter_0.3s]">
+                    {/* Game Header Bar */}
+                    <div className="bg-slate-900/80 backdrop-blur-md p-4 border-b border-slate-800 flex justify-between items-center z-20">
+                        <button onClick={() => setShowGameExitConfirm(true)} className="w-10 h-10 bg-red-600/10 border border-red-500/30 text-red-500 rounded-xl flex items-center justify-center shadow-lg active:scale-95 transition-transform">
+                            <i className="fa-solid fa-right-from-bracket"></i>
                         </button>
 
-                        <div className={`flex flex-col items-center px-4 transition-opacity ${isMyTurn ? 'opacity-100 scale-105' : 'opacity-50'}`}>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase">You</span>
-                            <div className="flex gap-0.5 my-0.5">
-                                {[1,2,3].map(i => <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= myHearts ? 'text-red-500' : 'text-slate-700'}`}></i>)}
+                        <div className="flex items-center gap-6">
+                            <div className={`flex flex-col items-center transition-all duration-300 ${isMyTurn ? 'opacity-100 scale-105' : 'opacity-50'}`}>
+                                <div className="flex gap-0.5 mb-1">
+                                    {[1,2,3].map(i => <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= myHearts ? 'text-red-500' : 'text-slate-700'}`}></i>)}
+                                </div>
+                                <span className="text-[10px] font-black text-pink-400 uppercase leading-none">YOU: {linesCompleted}/5</span>
                             </div>
-                            <span className="text-xs font-bold text-white">Line: {linesCompleted}/5</span>
-                        </div>
-                        <div className="flex flex-col items-center">
-                            <span className={`text-2xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>{turnTimer}</span>
-                            <span className="text-[8px] text-slate-500 uppercase font-bold">Sec</span>
-                        </div>
-                        <div className={`flex flex-col items-center px-4 transition-opacity ${!isMyTurn ? 'opacity-100 scale-105' : 'opacity-50'}`}>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase truncate max-w-[60px]">{opponentName}</span>
-                            <div className="flex gap-0.5 my-0.5">
-                                {[1,2,3].map(i => <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= oppHearts ? 'text-red-500' : 'text-slate-700'}`}></i>)}
+
+                            <div className="w-12 h-12 rounded-full border-2 border-slate-800 flex items-center justify-center relative">
+                                <div className="absolute inset-0 border-2 border-yellow-500 rounded-full border-t-transparent animate-spin"></div>
+                                <span className={`text-xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>{turnTimer}</span>
                             </div>
-                            <span className="text-xs font-bold text-white">{!isMyTurn ? 'Thinking...' : 'Waiting'}</span>
+
+                            <div className={`flex flex-col items-center transition-all duration-300 ${!isMyTurn ? 'opacity-100 scale-105' : 'opacity-50'}`}>
+                                <div className="flex gap-0.5 mb-1">
+                                    {[1,2,3].map(i => <i key={i} className={`fa-solid fa-heart text-[8px] ${i <= oppHearts ? 'text-red-500' : 'text-slate-700'}`}></i>)}
+                                </div>
+                                <span className="text-[10px] font-black text-purple-400 uppercase leading-none">{opponentName.split(' ')[0]}: ?/5</span>
+                            </div>
                         </div>
+
+                        <div className="w-10"></div> {/* Spacer for symmetry */}
                     </div>
 
-                    <div className="grid grid-cols-5 gap-2 mb-2 px-1">
-                        {['B', 'I', 'N', 'G', 'O'].map((char, i) => (
-                            <div key={i} className={`h-10 flex items-center justify-center rounded-lg font-black text-xl transition-all duration-500 ${i < linesCompleted ? 'bg-gradient-to-b from-yellow-300 to-orange-500 text-black shadow-[0_0_15px_rgba(234,179,8,0.6)] scale-110' : 'bg-slate-800 text-slate-600'}`}>{char}</div>
-                        ))}
-                    </div>
+                    {/* Centered Board Container */}
+                    <div className="flex-1 flex flex-col items-center justify-center p-4">
+                        <div className="w-full max-w-sm flex flex-col gap-4">
+                            {/* BINGO LETTERS */}
+                            <div className="grid grid-cols-5 gap-2 px-1">
+                                {['B', 'I', 'N', 'G', 'O'].map((char, i) => (
+                                    <div key={i} className={`h-12 flex items-center justify-center rounded-2xl font-black text-2xl transition-all duration-500 shadow-lg ${i < linesCompleted ? 'bg-gradient-to-b from-yellow-300 to-orange-500 text-black shadow-[0_0_20px_rgba(234,179,8,0.5)] scale-110 rotate-3' : 'bg-slate-800 text-slate-600 border border-slate-700'}`}>
+                                        {char}
+                                    </div>
+                                ))}
+                            </div>
 
-                    <div className="grid grid-cols-5 gap-2 aspect-square bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl relative">
-                        {board.map((num, idx) => {
-                            const isMarked = markedNumbers.includes(num);
-                            const isLast = lastCalledNumber === num;
-                            return (
-                                <button key={idx} onClick={() => handleNumberClick(num)} disabled={isMarked || !isMyTurn || !!winnerUid} className={`rounded-xl flex items-center justify-center text-lg font-bold transition-all duration-200 relative overflow-hidden ${isMarked ? 'bg-gradient-to-br from-pink-600 to-purple-700 text-white shadow-inner border border-purple-500/50' : 'bg-slate-800 text-slate-300 hover:bg-slate-700 active:scale-95'} ${!isMarked && isMyTurn ? 'ring-2 ring-purple-500/20' : ''}`}>
-                                    {isLast && <div className="absolute inset-0 bg-white/30 animate-ping rounded-xl"></div>}
-                                    {num}
-                                </button>
-                            );
-                        })}
+                            {/* THE GRID (Fixed Aspect Square) */}
+                            <div className="grid grid-cols-5 gap-2 aspect-square bg-slate-900 p-2 rounded-[2rem] border border-slate-800 shadow-2xl relative">
+                                {board.map((num, idx) => {
+                                    const call = calls.find(c => c.num === num);
+                                    const isMarked = !!call;
+                                    const isOpponentPick = call && call.uid !== user.uid;
+                                    const isLast = lastCalledNumber === num;
+
+                                    return (
+                                        <button 
+                                            key={idx} 
+                                            onClick={() => handleNumberClick(num)} 
+                                            disabled={isMarked || !isMyTurn || !!winnerUid} 
+                                            className={`rounded-2xl flex flex-col items-center justify-center text-lg font-black transition-all duration-300 relative overflow-hidden ${
+                                                isMarked 
+                                                ? (isOpponentPick 
+                                                    ? 'bg-gradient-to-br from-purple-700 to-indigo-900 text-purple-100 shadow-inner border border-purple-500/50' 
+                                                    : 'bg-gradient-to-br from-pink-600 to-purple-700 text-white shadow-inner border border-pink-500/50')
+                                                : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700 active:scale-95 border border-slate-700'
+                                            } ${!isMarked && isMyTurn ? 'ring-2 ring-pink-500/20' : ''}`}
+                                        >
+                                            {isLast && <div className="absolute inset-0 bg-white/20 animate-ping rounded-2xl"></div>}
+                                            {num}
+                                            {isOpponentPick && (
+                                                <span className="absolute top-1 right-1.5 text-[8px] font-black text-purple-300 opacity-80 italic animate-pulse">O</span>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            
+                            <div className="bg-slate-900/50 backdrop-blur-sm py-3 px-6 rounded-2xl border border-slate-800 text-center shadow-xl">
+                                <p className={`text-xs font-black uppercase tracking-[0.2em] ${isMyTurn ? 'text-green-400 animate-pulse' : 'text-slate-500'}`}>
+                                    {isMyTurn ? "Your Turn - Pick a number" : `Waiting for ${opponentName}...`}
+                                </p>
+                            </div>
+                        </div>
                     </div>
-                    <p className="text-center text-xs text-slate-500 mt-6 font-medium">{isMyTurn ? "Your Turn - Pick a number" : `Waiting for ${opponentName}...`}</p>
                 </div>
             )}
 
+            {/* RESULTS SCREEN */}
             {gameState === 'result' && (
                 <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center p-6 bg-slate-950 animate-[fade-enter_0.3s]">
                     <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 text-center shadow-2xl relative overflow-hidden">
-                        <div className={`absolute top-0 left-0 w-full h-2 ${winnerUid === user.uid ? 'bg-pink-500' : 'bg-red-500'}`}></div>
+                        <div className={`absolute top-0 left-0 w-full h-2 ${winnerUid === user.uid ? 'bg-pink-500 shadow-[0_0_15px_rgba(236,72,153,0.8)]' : 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]'}`}></div>
                         <div className="relative z-10">
                             <div className="text-7xl mb-6 transform scale-125 animate-bounce">{winnerUid === user.uid ? '🏆' : '💀'}</div>
                             <h2 className={`text-4xl font-black mb-1 uppercase italic tracking-tighter ${winnerUid === user.uid ? 'text-pink-500' : 'text-red-500'}`}>{winnerUid === user.uid ? 'VICTORY' : 'DEFEAT'}</h2>
@@ -691,17 +761,15 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 </div>
             )}
 
+            {/* CONFIRM MODALS */}
             {showLeaveConfirm && (
-                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
+                <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/60 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
                     <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
-                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 rotate-12">
-                            <i className="fa-solid fa-power-off text-3xl"></i>
-                        </div>
                         <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Stop Search?</h3>
                         <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Matchmaking is currently active. Leaving will cancel your search.</p>
                         <div className="flex flex-col gap-3">
-                            <button onClick={() => cancelSearch()} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Yes, Exit</button>
+                            <button onClick={() => cancelSearch()} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl">Yes, Exit</button>
                             <button onClick={() => setShowLeaveConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Wait</button>
                         </div>
                     </div>
@@ -712,84 +780,12 @@ const BingoScreen = ({ user, onBack, showToast, onNavigateToWallet, latency }: {
                 <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-[fade-enter_0.2s]">
                     <div className="bg-slate-900 border border-slate-800 w-full max-w-xs p-8 rounded-[2.5rem] text-center shadow-2xl relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-1 bg-red-600"></div>
-                        <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 text-red-500 animate-pulse">
-                            <i className="fa-solid fa-right-from-bracket text-3xl"></i>
-                        </div>
                         <h3 className="text-xl font-black text-white mb-2 uppercase italic tracking-tight">Quit Match?</h3>
                         <p className="text-slate-400 text-sm mb-8 font-medium leading-relaxed">Quitting mid-game results in <span className="text-red-500 font-bold">LOSS</span> and opponent victory.</p>
                         <div className="flex flex-col gap-3">
-                            <button onClick={handleLeaveGame} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Confirm Quit</button>
+                            <button onClick={handleLeaveGame} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl">Confirm Quit</button>
                             <button onClick={() => setShowGameExitConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Keep Playing</button>
                         </div>
-                    </div>
-                </div>
-            )}
-
-            {showHistory && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2rem] p-6 shadow-2xl flex flex-col max-h-[70vh] relative overflow-hidden" onClick={e => e.stopPropagation()}>
-                        <div className="absolute top-0 left-0 w-full h-1 bg-pink-500"></div>
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="font-black text-xl italic uppercase tracking-tighter text-pink-500">Bingo History</h3>
-                            <button onClick={() => setShowHistory(false)} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
-                        </div>
-                        <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar">
-                            {localHistory.length === 0 ? (
-                                <div className="text-center py-12 flex flex-col items-center gap-3">
-                                    <i className="fa-solid fa-ghost text-4xl text-slate-700"></i>
-                                    <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">No Bingo Yet</p>
-                                </div>
-                            ) : 
-                            localHistory.map(h => (
-                                <div key={h.id} className="bg-slate-800/50 border border-slate-800 p-4 rounded-2xl flex justify-between items-center hover:bg-slate-800 transition-colors">
-                                    <div className="flex gap-3 items-center">
-                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.details?.includes("Win") ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
-                                            <i className={`fa-solid ${h.details?.includes("Win") ? 'fa-trophy' : 'fa-table-cells'}`}></i>
-                                        </div>
-                                        <div>
-                                            <p className="text-xs font-black text-slate-200 uppercase tracking-tight">{h.details}</p>
-                                            <p className="text-[10px] text-slate-500 font-bold">{new Date(h.date).toLocaleDateString()} • {new Date(h.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                                        </div>
-                                    </div>
-                                    <p className={`font-black text-sm ${h.details?.includes("Win") ? 'text-green-400' : 'text-red-400'}`}>
-                                        {h.details?.includes("Win") ? '+' : '-'}₹{h.amount}
-                                    </p>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {showHowTo && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-                        <div className="absolute top-0 left-0 w-full h-1 bg-pink-500"></div>
-                        <div className="flex justify-between items-center mb-8">
-                            <h3 className="font-black text-2xl italic uppercase tracking-tighter text-pink-500">How to Win</h3>
-                            <button onClick={() => setShowHowTo(false)} className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
-                        </div>
-                        <div className="space-y-6">
-                            <div className="flex gap-4 items-start">
-                                <div className="w-12 h-12 shrink-0 bg-pink-500/10 rounded-2xl flex items-center justify-center text-pink-500">
-                                    <i className="fa-solid fa-table-cells text-xl"></i>
-                                </div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Pick Wisely</h4><p className="text-slate-400 text-xs leading-relaxed">Numbers you pick are marked for BOTH players. Think before you strike!</p></div>
-                            </div>
-                            <div className="flex gap-4 items-start">
-                                <div className="w-12 h-12 shrink-0 bg-yellow-500/10 rounded-2xl flex items-center justify-center text-yellow-500">
-                                    <i className="fa-solid fa-lines-leaning text-xl"></i>
-                                </div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Make 5 Lines</h4><p className="text-slate-400 text-xs leading-relaxed">Complete 5 lines (Horizontal, Vertical or Diagonal) to shout B-I-N-G-O!</p></div>
-                            </div>
-                            <div className="flex gap-4 items-start">
-                                <div className="w-12 h-12 shrink-0 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500">
-                                    <i className="fa-solid fa-heart text-xl"></i>
-                                </div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Survival</h4><p className="text-slate-400 text-xs leading-relaxed">Don't miss your turns. Losing all hearts means instant game over!</p></div>
-                            </div>
-                        </div>
-                        <button onClick={() => setShowHowTo(false)} className="w-full mt-10 bg-pink-600 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-pink-900/20 active:scale-95 transition-transform">Start Playing</button>
                     </div>
                 </div>
             )}
