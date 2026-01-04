@@ -214,7 +214,7 @@ const App = () => {
   }
 
   const TopBar = () => {
-    if (selectedGame) return null; 
+    if (selectedGame && selectedGame !== 'FREE FIRE') return null; // Hide for immersive games like Bingo/TTT
     let title = "SM EARN";
     if (isHosting) title = "HOST MATCH";
     else if (activeTab === 'wallet') title = "WALLET";
@@ -264,8 +264,8 @@ const App = () => {
   };
 
   const BottomBar = () => {
-    // Hide bottom bar during games for full immersion
-    if (selectedGame) return null;
+    // Hide bottom bar during immersive games (Bingo/TTT), but keep for Free Fire list
+    if (selectedGame && selectedGame !== 'FREE FIRE') return null;
 
     return (
       <div className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 border-t border-slate-100 dark:border-slate-800 px-6 py-2 flex justify-between items-center z-[100] pb-safe backdrop-blur-md">

@@ -183,8 +183,9 @@ const WalletScreen = ({ user, showToast }: { user: UserProfile, showToast: (m: s
 
   // Summary Logic for filtered view
   const summary = filteredTx.reduce((acc, t) => {
-      const isEntry = t.details?.toLowerCase().includes('entry') || t.details?.toLowerCase().includes('joined');
-      const isCredit = t.type === 'add' || t.type === 'bonus' || t.type === 'transfer_received' || (t.type === 'game' && t.category === 'winning' && !isEntry) || t.type === 'p2p_buy';
+      const detailsLower = t.details?.toLowerCase() || "";
+      const isEntry = detailsLower.includes('entry') || detailsLower.includes('joined') || detailsLower.includes('purchase') || detailsLower.includes('fee');
+      const isCredit = t.type === 'add' || t.type === 'bonus' || t.type === 'transfer_received' || (t.type === 'game' && !isEntry) || t.type === 'p2p_buy';
       if (isCredit) acc.credit += t.amount;
       else acc.debit += t.amount;
       return acc;
@@ -212,19 +213,21 @@ const WalletScreen = ({ user, showToast }: { user: UserProfile, showToast: (m: s
               <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase mb-2 ml-2 bg-slate-100 dark:bg-slate-800 inline-block px-2 py-0.5 rounded">{dateKey}</div>
               <div className="space-y-3">
                   {grouped[dateKey].map(tx => {
-                      const isEntry = tx.details?.toLowerCase().includes('entry') || tx.details?.toLowerCase().includes('joined');
+                      const detailsLower = tx.details?.toLowerCase() || "";
+                      const isEntry = detailsLower.includes('entry') || detailsLower.includes('joined') || detailsLower.includes('purchase') || detailsLower.includes('fee');
+                      const isWinning = detailsLower.includes('win') || detailsLower.includes('won') || detailsLower.includes('refund') || detailsLower.includes('credit');
                       
-                      const isPositive = 
-                          tx.type === 'add' || 
-                          tx.type === 'bonus' || 
-                          tx.type === 'transfer_received' ||
-                          tx.type === 'p2p_buy' ||
-                          (tx.type === 'game' && tx.category === 'winning' && !isEntry); // Ensure entries are treated as expenses
-
-                      const isNegative = !isPositive;
+                      let isPositive = false;
+                      if (tx.type === 'add' || tx.type === 'bonus' || tx.type === 'transfer_received') isPositive = true;
+                      else if (tx.type === 'game') {
+                          if (isWinning) isPositive = true;
+                          else if (isEntry) isPositive = false; // Entry is negative
+                          else isPositive = tx.category === 'winning' ? true : false; // Fallback
+                      }
+                      
                       const amountColor = isPositive ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400';
                       const amountSign = isPositive ? '+' : '-';
-                      const categoryColor = isNegative ? 'text-red-500' : 'text-slate-400';
+                      const categoryColor = !isPositive ? 'text-red-500' : 'text-slate-400';
 
                       return (
                       <div key={tx.id} className="flex justify-between items-center pb-3 border-b border-slate-50 dark:border-slate-800 last:border-0 last:pb-0">

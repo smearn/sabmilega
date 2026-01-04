@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { UserProfile, ToastType } from "../../types";
 import { update, ref, push, onValue, remove, get, set, runTransaction, query, limitToFirst, onDisconnect } from "firebase/database";
@@ -26,7 +27,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
     const [mySymbol, setMySymbol] = useState<PlayerSymbol | null>(null);
     const [currentTurn, setCurrentTurn] = useState<PlayerSymbol>('X');
     const [gameId, setGameId] = useState<string | null>(null);
-    const [opponentName, setOpponentName] = useState("Opponent");
+    const [opponentName, setOpponentName] = useState("Searching...");
     const [opponentPic, setOpponentPic] = useState("");
     const [winner, setWinner] = useState<PlayerSymbol | 'Draw' | null>(null);
     const [roundWinner, setRoundWinner] = useState<PlayerSymbol | 'Draw' | null>(null);
@@ -47,6 +48,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
     const [searchTimeLeft, setSearchTimeLeft] = useState(60);
     const [timeoutCountdown, setTimeoutCountdown] = useState(3);
     const [turnTimer, setTurnTimer] = useState(15);
+    const [battleStartCountdown, setBattleStartCountdown] = useState(3);
 
     const matchRef = useRef<any>(null);
     const payoutProcessed = useRef(false);
@@ -123,6 +125,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         setExitReason(null);
         setSelectedTier(tier);
         setGameState('finding');
+        setOpponentName("Searching...");
 
         const queueRoot = `ttt_queue/tier_${tier.entry}_r${rounds}`;
         
@@ -219,6 +222,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         setWinner(null);
         setRoundWinner(null);
         setGameState('matched');
+        setBattleStartCountdown(3);
         
         let attempts = 0;
         const fetchName = async () => {
@@ -237,21 +241,14 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
             }
         };
         fetchName();
-
-        setTimeout(() => {
-            if(stateRef.current === 'matched') {
-                setGameState('countdown');
-                setCountdown(3);
-            }
-        }, 3000);
     };
 
     useEffect(() => {
         let interval: any;
-        if (gameState === 'countdown') {
+        if (gameState === 'matched') {
             interval = setInterval(() => {
-                setCountdown(prev => {
-                    if (prev === 1) {
+                setBattleStartCountdown(prev => {
+                    if (prev <= 1) {
                         clearInterval(interval);
                         processEntryFee();
                         return 0;
@@ -411,6 +408,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
     };
 
     const resetGame = () => {
+        const tier = selectedTier;
         setGameState('lobby');
         setWinner(null);
         setRoundWinner(null);
@@ -423,6 +421,7 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
         setShowLeaveConfirm(false);
         setShowGameExitConfirm(false);
         setExitReason(null);
+        if (tier) handleJoinQueue(tier);
     };
 
     const fetchHistory = async () => {
@@ -441,10 +440,8 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
 
     return (
         <div className="fixed inset-0 bg-slate-950 text-white flex flex-col font-sans z-[150]">
-            {/* Header logic adjusted for finding screen requirement */}
-            {(gameState === 'lobby' || gameState === 'finding' || gameState === 'search_timeout') && (
+            {(gameState === 'lobby' || gameState === 'finding' || gameState === 'matched' || gameState === 'search_timeout') && (
                 <div className="bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800 pb-6 pt-4 px-6 shadow-xl relative overflow-hidden shrink-0">
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
                     <div className="flex items-start justify-between relative z-10">
                         {gameState === 'lobby' ? (
                             <button onClick={onBack} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center hover:bg-slate-700 transition">
@@ -455,14 +452,9 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                 <i className="fa-solid fa-right-from-bracket"></i>
                             </button>
                         )}
-                        <div className="flex items-center gap-3">
-                            {latency !== null && (
-                                <div className="flex items-center gap-1 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-800 text-[10px] font-bold text-slate-400">
-                                    <i className="fa-solid fa-signal text-green-500"></i> {latency}ms
-                                </div>
-                            )}
-                            <button onClick={fetchHistory} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400"><i className="fa-solid fa-clock-rotate-left"></i></button>
-                            <button onClick={() => setShowHowTo(true)} className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400"><i className="fa-solid fa-circle-info"></i></button>
+                        <div className="flex items-center gap-2 bg-slate-900/40 px-3 py-1 rounded-full border border-slate-800">
+                            <i className={`fa-solid fa-signal text-[8px] ${(latency && latency > 500) ? 'text-red-500' : 'text-green-500'}`}></i>
+                            <span className="text-[10px] font-bold text-slate-400">{latency || 0}ms</span>
                         </div>
                     </div>
                     {gameState === 'lobby' && (
@@ -493,7 +485,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                         </div>
                     </div>
                     <div className="grid grid-cols-1 gap-4">
-                        {/* Corrected: Use TIERS instead of non-existent availableTiers */}
                         {TIERS.map((tier, idx) => (
                             <div key={idx} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-lg relative overflow-hidden group hover:border-blue-500/50 transition-all duration-300">
                                 <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-slate-800 via-transparent to-transparent opacity-50"></div>
@@ -510,47 +501,42 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                 </div>
             )}
 
-            {gameState === 'finding' && (
+            {(gameState === 'finding' || gameState === 'matched') && (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 relative overflow-hidden animate-[fade-enter_0.3s]">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-900/20 via-slate-950 to-slate-950"></div>
-                    
                     <div className="relative z-10 mb-12">
-                        <div className="w-24 h-24 rounded-full border-4 border-slate-800 flex items-center justify-center relative">
-                            <div className="absolute inset-0 border-4 border-blue-500 rounded-full border-t-transparent animate-spin"></div>
-                            <span className="text-3xl font-black text-white">{searchTimeLeft}</span>
+                        <div className={`w-24 h-24 rounded-full border-4 border-slate-800 flex items-center justify-center relative transition-all ${gameState === 'matched' ? 'scale-110 border-green-500' : ''}`}>
+                            <div className={`absolute inset-0 border-4 ${gameState === 'matched' ? 'border-green-500' : 'border-blue-500'} rounded-full border-t-transparent animate-spin`}></div>
+                            <span className="text-3xl font-black text-white">{gameState === 'matched' ? battleStartCountdown : searchTimeLeft}</span>
                         </div>
                     </div>
-
                     <div className="flex items-center gap-6 relative z-10 mb-16">
-                        <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out]">
-                            <div className="relative">
-                                <div className="w-28 h-28 rounded-full border-4 border-blue-500 p-1 shadow-[0_0_20px_rgba(59,130,246,0.3)] overflow-hidden bg-slate-800">
-                                    <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
-                                </div>
-                                <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg rotate-12">
-                                    <span className="text-white text-xl font-black">X</span>
-                                </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <div className="w-28 h-28 rounded-full border-4 border-blue-500 p-1 bg-slate-800 shadow-[0_0_20px_rgba(59,130,246,0.3)]">
+                                <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
                             </div>
                             <span className="text-xs font-bold text-blue-400">YOU</span>
                         </div>
-
                         <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center border border-white/10 backdrop-blur-sm">
                             <span className="text-sm font-black italic text-slate-500">VS</span>
                         </div>
-
-                        <div className="flex flex-col items-center gap-2 animate-[slide-up_0.4s_ease-out_0.1s]">
-                            <div className="relative">
-                                <div className="w-28 h-28 rounded-full border-4 border-slate-800 p-1 overflow-hidden bg-slate-800 shadow-inner">
-                                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${RANDOM_NAMES[cyclingIndex]}`} className="w-full h-full rounded-full object-cover transition-opacity duration-150" />
-                                </div>
-                                <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center border-2 border-slate-950 shadow-lg -rotate-12">
-                                    <span className="text-white text-xl font-black">O</span>
-                                </div>
+                        <div className="flex flex-col items-center gap-2">
+                            <div className="w-28 h-28 rounded-full border-4 border-slate-800 p-1 bg-slate-800 shadow-inner">
+                                <img src={gameState === 'matched' ? opponentPic : `https://api.dicebear.com/7.x/avataaars/svg?seed=${RANDOM_NAMES[cyclingIndex]}`} className="w-full h-full rounded-full object-cover" />
                             </div>
-                            <span className="text-xs font-bold text-slate-500 animate-pulse uppercase">Searching</span>
+                            <span className={`text-xs font-bold ${gameState === 'matched' ? 'text-red-400' : 'text-slate-500'} uppercase`}>{gameState === 'matched' ? opponentName : "Searching"}</span>
                         </div>
                     </div>
-                    <h3 className="text-lg font-bold text-white mb-8 animate-pulse relative z-10 tracking-widest uppercase">Finding Match...</h3>
+                    <div className="relative z-10 text-center px-6">
+                        {gameState === 'matched' ? (
+                            <div className="animate-bounce">
+                                <h3 className="text-4xl font-black text-white italic tracking-tighter uppercase mb-2">BATTLE START!</h3>
+                                <p className="text-yellow-400 font-black text-lg">Prize: ₹{selectedTier?.prize}</p>
+                            </div>
+                        ) : (
+                            <h3 className="text-lg font-black text-white/50 uppercase tracking-[0.3em] animate-pulse">Finding Opponent</h3>
+                        )}
+                    </div>
                 </div>
             )}
 
@@ -562,8 +548,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                             <i className="fa-solid fa-user-slash text-4xl"></i>
                         </div>
                         <h2 className="text-2xl font-black text-white uppercase italic mb-2 tracking-tight">No Player Found</h2>
-                        <p className="text-slate-400 text-sm mb-12 max-w-xs mx-auto">We couldn't find an opponent for this entry tier right now.</p>
-                        
                         <div className="flex flex-col items-center">
                             <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-4">Returning to Table</p>
                             <div className="text-6xl font-black text-white tabular-nums animate-bounce">
@@ -574,45 +558,12 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                 </div>
             )}
 
-            {gameState === 'matched' && (
-                <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 p-8 relative overflow-hidden animate-[fade-enter_0.3s]">
-                     <div className="absolute inset-0 bg-blue-600/10 opacity-30 animate-pulse"></div>
-                     <div className="text-[60px] font-black text-white italic tracking-tighter animate-[bounce_0.5s_infinite] drop-shadow-lg mb-12">
-                        BATTLE START!
-                     </div>
-                     <div className="flex items-center gap-12 relative z-10">
-                        <div className="flex flex-col items-center gap-3 animate-[slide-down_0.5s_ease-out]">
-                            <div className="w-32 h-32 rounded-full border-4 border-blue-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(59,130,246,0.5)]">
-                                <img src={user.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`} className="w-full h-full rounded-full object-cover" />
-                            </div>
-                            <span className="text-sm font-black text-blue-400 uppercase tracking-widest">{user.username}</span>
-                        </div>
-                        <div className="text-4xl font-black text-slate-700 italic">VS</div>
-                        <div className="flex flex-col items-center gap-3 animate-[slide-up_0.5s_ease-out]">
-                            <div className="w-32 h-32 rounded-full border-4 border-red-500 p-1 bg-slate-900 shadow-[0_0_30px_rgba(239,68,68,0.5)]">
-                                <img src={opponentPic} className="w-full h-full rounded-full object-cover" />
-                            </div>
-                            <span className="text-sm font-black text-red-400 uppercase tracking-widest">{opponentName}</span>
-                        </div>
-                     </div>
-                </div>
-            )}
-
-            {gameState === 'countdown' && (
-                <div className="flex-1 flex flex-col items-center justify-center bg-slate-900 relative animate-[fade-enter_0.3s]">
-                    <div className="text-[150px] font-black text-transparent bg-clip-text bg-gradient-to-b from-blue-400 to-blue-600 animate-[bounce_1s_infinite]">{countdown > 0 ? countdown : "GO!"}</div>
-                    <p className="text-slate-400 font-bold mt-4 uppercase tracking-widest">Match Ready</p>
-                </div>
-            )}
-
             {gameState === 'playing' && (
                 <div className="flex-1 flex flex-col p-4 relative overflow-y-auto animate-[fade-enter_0.3s]">
                     <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur-md p-4 rounded-2xl mb-4 border border-slate-800 shadow-xl relative">
-                        {/* Leave Button */}
                         <button onClick={() => setShowGameExitConfirm(true)} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg hover:scale-110 active:scale-95 transition-transform z-30">
                             <i className="fa-solid fa-right-from-bracket text-xs"></i>
                         </button>
-
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn === mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
                             <div className="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center text-blue-400 font-black text-2xl mb-1 shadow-inner border border-blue-500/30 relative">
                                 {mySymbol}
@@ -626,8 +577,16 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                             <span className="text-[10px] font-bold text-slate-300 uppercase tracking-tighter">YOU</span>
                         </div>
                         <div className="flex flex-col items-center">
-                            <span className={`text-3xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>{turnTimer}</span>
-                            <span className="text-[8px] text-slate-500 uppercase font-bold tracking-wider">SEC</span>
+                            {currentTurn === mySymbol && (
+                                <>
+                                <span className={`text-3xl font-mono font-black ${turnTimer < 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>{turnTimer}</span>
+                                <span className="text-[8px] text-slate-500 uppercase font-bold tracking-wider">SEC</span>
+                                </>
+                            )}
+                            <div className="flex items-center gap-1 mt-1">
+                                <span className={`w-2 h-2 rounded-full ${latency && latency > 500 ? 'bg-red-500' : 'bg-green-500'} animate-pulse`}></span>
+                                <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{currentTurn === mySymbol ? 'Your Turn' : 'Opponent'}</p>
+                            </div>
                         </div>
                         <div className={`flex flex-col items-center transition-all duration-300 ${currentTurn !== mySymbol ? 'opacity-100 scale-110' : 'opacity-50'}`}>
                             <div className="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center text-red-400 font-black text-2xl mb-1 shadow-inner border border-red-500/30 relative">
@@ -668,7 +627,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                         <div className={`absolute top-0 left-0 w-full h-2 bg-gradient-to-r ${winner === mySymbol ? 'from-green-400 to-emerald-500' : winner === 'Draw' ? 'from-slate-400 to-slate-500' : 'from-red-400 to-red-600'}`}></div>
                         <div className="text-7xl mb-6 transform scale-125 animate-bounce">{winner === mySymbol ? '🏆' : winner === 'Draw' ? '🤝' : '💀'}</div>
                         <h2 className={`text-4xl font-black mb-1 uppercase italic tracking-tighter ${winner === mySymbol ? 'text-green-500' : winner === 'Draw' ? 'text-slate-200' : 'text-red-500'}`}>{winner === mySymbol ? 'VICTORY' : winner === 'Draw' ? 'DRAW' : 'DEFEAT'}</h2>
-                        
                         {exitReason === 'LEFT' && (
                             <div className="bg-white/5 py-1 px-4 rounded-full inline-block mb-4">
                                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
@@ -676,7 +634,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                 </p>
                             </div>
                         )}
-
                         {winner === mySymbol && selectedTier && (
                              <div className="mt-2 bg-green-500/10 border border-green-500/20 rounded-xl p-3 inline-block">
                                  <p className="text-[10px] text-green-400 font-bold uppercase tracking-widest mb-1">Prize Won</p>
@@ -693,7 +650,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                                 <p className="text-2xl font-black text-white">{scores[mySymbol === 'X' ? 'O' : 'X']}</p>
                             </div>
                         </div>
-                        <p className="text-slate-400 font-medium mb-8 text-sm">{winner === mySymbol ? "Awesome skills! Money added to winnings." : winner === 'Draw' ? "Tough battle! Fee refunded." : "Don't give up! Try again."}</p>
                         <div className="flex flex-col gap-3">
                             <button onClick={resetGame} className="w-full py-4 bg-white text-slate-900 font-black rounded-2xl hover:bg-slate-200 transition shadow-lg text-sm uppercase tracking-wider">Play Again</button>
                             <button onClick={onBack} className="w-full py-2 text-slate-500 font-bold text-xs uppercase tracking-widest hover:text-slate-300">Exit to Menu</button>
@@ -732,69 +688,6 @@ const TicTacToeScreen = ({ user, onBack, showToast, onNavigateToWallet, latency 
                             <button onClick={handleLeaveGame} className="w-full py-4 bg-red-600 text-white font-black rounded-2xl text-xs uppercase shadow-xl shadow-red-600/30">Leave & Forfeit</button>
                             <button onClick={() => setShowGameExitConfirm(false)} className="w-full py-3 bg-slate-800 text-slate-300 font-bold rounded-2xl text-xs uppercase">Return to Game</button>
                         </div>
-                    </div>
-                </div>
-            )}
-
-            {showHistory && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHistory(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2rem] p-6 shadow-2xl flex flex-col max-h-[70vh] relative overflow-hidden" onClick={e => e.stopPropagation()}>
-                        <div className="absolute top-0 left-0 w-full h-1 bg-blue-600"></div>
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="font-black text-xl italic uppercase tracking-tighter text-blue-400">Match History</h3>
-                            <button onClick={() => setShowHistory(false)} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
-                        </div>
-                        <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar">
-                            {localHistory.length === 0 ? (
-                                <div className="text-center py-12 flex flex-col items-center gap-3">
-                                    <i className="fa-solid fa-ghost text-4xl text-slate-700"></i>
-                                    <p className="text-slate-500 text-sm font-bold uppercase tracking-widest">No Matches Yet</p>
-                                </div>
-                            ) : 
-                            localHistory.map(h => (
-                                <div key={h.id} className="bg-slate-800/50 border border-slate-800 p-4 rounded-2xl flex justify-between items-center hover:bg-slate-800 transition-colors">
-                                    <div className="flex gap-3 items-center">
-                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${h.details?.includes("Win") ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
-                                            <i className={`fa-solid ${h.details?.includes("Win") ? 'fa-trophy' : 'fa-gamepad'}`}></i>
-                                        </div>
-                                        <div>
-                                            <p className="text-xs font-black text-slate-200 uppercase tracking-tight">{h.details}</p>
-                                            <p className="text-[10px] text-slate-500 font-bold">{new Date(h.date).toLocaleDateString()} • {new Date(h.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                                        </div>
-                                    </div>
-                                    <p className={`font-black text-sm ${h.details?.includes("Win") ? 'text-green-400' : 'text-red-400'}`}>
-                                        {h.details?.includes("Win") ? '+' : '-'}₹{h.amount}
-                                    </p>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {showHowTo && (
-                <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-[fade-enter_0.2s]" onClick={() => setShowHowTo(false)}>
-                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-                        <div className="absolute top-0 left-0 w-full h-1 bg-yellow-500"></div>
-                        <div className="flex justify-between items-center mb-8">
-                            <h3 className="font-black text-2xl italic uppercase tracking-tighter text-yellow-500">Battle Manual</h3>
-                            <button onClick={() => setShowHowTo(false)} className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400"><i className="fa-solid fa-xmark"></i></button>
-                        </div>
-                        <div className="space-y-6">
-                            <div className="flex gap-4 items-start">
-                                <div className="w-10 h-10 shrink-0 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 font-black">01</div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Victory Path</h4><p className="text-slate-400 text-xs leading-relaxed">Connect 3 symbols (X or O) vertically, horizontally or diagonally to win a round.</p></div>
-                            </div>
-                            <div className="flex gap-4 items-start">
-                                <div className="w-10 h-10 shrink-0 bg-red-500/10 rounded-xl flex items-center justify-center text-red-500 font-black">02</div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Heart System</h4><p className="text-slate-400 text-xs leading-relaxed">You have 3 Hearts. Each turn timeout (15s) consumes 1 Heart. Lose all = Defeat!</p></div>
-                            </div>
-                            <div className="flex gap-4 items-start">
-                                <div className="w-10 h-10 shrink-0 bg-purple-500/10 rounded-xl flex items-center justify-center text-purple-500 font-black">03</div>
-                                <div><h4 className="text-white font-bold uppercase text-xs mb-1">Match Rounds</h4><p className="text-slate-400 text-xs leading-relaxed">Winner is decided by 'Best of N' logic. Reach target wins first to claim the cash prize.</p></div>
-                            </div>
-                        </div>
-                        <button onClick={() => setShowHowTo(false)} className="w-full mt-10 bg-yellow-500 text-black py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-yellow-500/20 active:scale-95 transition-transform">Get Ready</button>
                     </div>
                 </div>
             )}
